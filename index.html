@@ -523,7 +523,7 @@ function render(){
 /* ==========================================================================
    5. LOGIN
    ========================================================================== */
-let loginUser=null, pin="";
+let loginUser=null, pin="", pendingHandOff=null;
 function viewLogin(){
   return `<div class="login">
     <div class="brand"><div class="a">Hotel operations</div><div class="b">Ski Valet</div><div class="c">Storage management</div></div>
@@ -545,6 +545,8 @@ function tryLogin(){
   if(pin===loginUser.pin){
     SESSION=loginUser; log("Signed in",{});
     save(); toast("Welcome, "+SESSION.name.split(" ")[0]); pin=""; home();
+    if(pendingHandOff){ const c=pendingHandOff; pendingHandOff=null;
+      scanCtx={ctx:"identify"}; go("scan",{ctx:"identify"}); handleCard(c); }
   } else { toast("Wrong PIN","err"); pin=""; $("#shell").innerHTML=viewLogin(); }
 }
 
@@ -683,6 +685,19 @@ window.SkiValet = {
   version:"1.0",
   get ready(){ return !!SESSION; }
 };
+/* Capacitor bridge — active only inside the iOS wrapper, ignored in a browser. */
+(function(){
+  const plugin = () => window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.SkiValetNFC;
+  if(!plugin()) return;
+  window.SkiValetNative = {
+    scan(){
+      plugin().scan()
+        .then(res => { if(res && res.uid) window.SkiValet.scan(res.uid);
+                       else if(res && res.cancelled) setNfc("off","Scan cancelled — tap to try again"); })
+        .catch(err => { setNfc("off","Reader error: "+(err && err.message ? err.message : "unknown")); });
+    }
+  };
+})();
 
 
 let nfcReader=null, nfcState="idle", wedge="", wedgeT=null;
@@ -715,9 +730,10 @@ VIEWS.scan = (p) => {
       <input class="input big" id="codeIn" placeholder="A7F83K29X51" autocomplete="off" autocapitalize="characters" spellcheck="false">
       <div class="hint">USB / Bluetooth readers that type the code work here automatically — the field stays focused.</div>
       <div class="btn-grid" style="margin-top:12px">
-        <button class="btn" data-act="demo-scan">Test scan</button>
+        <button class="btn" data-act="paste-code">Paste from clipboard</button>
         <button class="btn go" data-act="submit-code">Read card</button>
       </div>
+      <button class="btn ghost sm" style="width:100%;margin-top:8px" data-act="demo-scan">Test scan</button>
     </div>
     <h2 class="sec">How cards are read</h2>
     <div class="panel tiny muted">Android reads cards directly. iPhone needs either a paired Bluetooth reader in keyboard mode or the wrapper app.
@@ -742,8 +758,38 @@ async function startNFC(){
     await nfcReader.scan();
     setNfc("live","Reader active — waiting for a card");
     nfcReader.onreading = ev => { const code = normCode(ev.serialNumber || (ev.message?.records?.[0]?.recordType||"")); if(code) handleCard(code); };
-    nfcReader.onreadingerror = () => toast("Card could not be read — try again","err");
+    nfcReader.onreadingerror = () => {
+      // Chrome only exposes the serial number for NDEF-readable tags. Hotel cards
+      // are often not NDEF-formatted, in which case this fires every time and the
+      // browser cannot give us the UID at all — the Android wrapper app can.
+      toast("This card is not readable from the browser","err");
+      setNfc("off","Card not NDEF — needs the Android wrapper app or a reader");
+    };
   }catch(err){ setNfc("off","Reader blocked — allow NFC in the browser, or type the code"); }
+}
+/* Free fallback for iPhones without the wrapper app: read the UID in any
+   App Store NFC utility, copy it, and paste it here. */
+async function pasteCode(){
+  try{
+    const txt = await navigator.clipboard.readText();
+    const code = normCode(txt);
+    if(!code){ toast("Clipboard is empty","err"); return; }
+    handleCard(code);
+  }catch(err){
+    toast("Allow clipboard access, or type the code","err");
+    $("#codeIn")?.focus();
+  }
+}
+/* External hand-off: any app or Shortcut that can open a URL may pass a card
+   as  ...index.html?card=04A2B7C19E3F80  and the app picks it up on load. */
+function consumeUrlCard(){
+  try{
+    const q = new URLSearchParams(location.search);
+    const raw = q.get("card") || q.get("uid");
+    if(!raw) return null;
+    history.replaceState(null,"",location.pathname);   // don't re-scan on refresh
+    return normCode(raw) || null;
+  }catch(e){ return null; }
 }
 function submitCode(){ const v=normCode($("#codeIn")?.value); if(!v){ toast("Enter a card code","err"); return; } handleCard(v); }
 function randomCode(){
@@ -1506,6 +1552,7 @@ document.addEventListener("click", e=>{
     case "native-scan": askNativeScan(); break;
     case "submit-code": submitCode(); break;
     case "demo-scan": demoScan(); break;
+    case "paste-code": pasteCode(); break;
     case "done-adding": closeSheet(); replaceView("room",{id:+el.dataset.id}); break;
     case "do-reassign": doReassign(+el.dataset.card,+el.dataset.room, el.dataset.storage?+el.dataset.storage:null); break;
     /* register */
@@ -1580,7 +1627,10 @@ document.addEventListener("click",e=>{
   ["rooms","storages","cards","equipment","history"].forEach(k=>{ if(!Array.isArray(DB[k])) DB[k]=[]; });
   DB.users.forEach(u=>{ if(!u.pin) u.pin="1111"; });
   nav=[{view:"dash",params:{}}];
+  const handed = consumeUrlCard();
   render();
+  if(handed && SESSION){ scanCtx={ctx:"identify"}; go("scan",{ctx:"identify"}); handleCard(handed); }
+  else if(handed){ pendingHandOff = handed; }
 })();
 </script>
 </body>
