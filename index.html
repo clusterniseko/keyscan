@@ -381,7 +381,10 @@ const CATS = {
 };
 let DB = null, SESSION = null, nav = [], scanCtx = null, draft = null;
 
-const uid = (()=>{ let n = Date.now()%1e7; return ()=>++n; })();
+let uidN = Date.now()%1e7;
+const uid = () => ++uidN;
+/* ids restart from the clock (wraps every ~2.8h) — never hand out one already in the data */
+function bumpUid(){ ["rooms","storages","cards","equipment","users","history"].forEach(k=>(DB[k]||[]).forEach(x=>{ if(typeof x.id==="number"&&x.id>uidN) uidN=x.id; })); }
 const now = () => Date.now();
 
 function baseUsers(){
@@ -1500,6 +1503,7 @@ function openAccount(){
     <div class="list">
       ${SESSION.role==="admin"?`<button class="item" data-act="nav-sheet" data-view="users"><span class="body"><b>Staff accounts</b><small>Add or review users</small></span><span class="arr">›</span></button>`:""}
       <button class="item" data-act="nav-sheet" data-view="history"><span class="body"><b>Activity history</b><small>Full audit trail</small></span><span class="arr">›</span></button>
+      ${SESSION.role==="admin"?`<a class="item" href="admin.html" style="text-decoration:none;color:inherit"><span class="body"><b>Admin console</b><small>Fix records, trace equipment, backups</small></span><span class="arr">›</span></a>`:""}
       ${SESSION.role==="admin"?`<button class="item" data-act="nav-sheet" data-view="setup"><span class="body"><b>Hall setup</b><small>Locations, demo data, reset</small></span><span class="arr">›</span></button>`:""}
       <button class="item" data-act="signout"><span class="body"><b style="color:var(--st-attention)">Sign out</b><small>Lock the app</small></span></button>
     </div>`);
@@ -1621,11 +1625,21 @@ document.addEventListener("click",e=>{
 /* ==========================================================================
    17. BOOT
    ========================================================================== */
+/* The admin console (admin.html) edits the same record — pick up its saves. */
+window.addEventListener("storage", e=>{
+  if(e.key!==KEY || !e.newValue) return;
+  try{ DB = JSON.parse(e.newValue); }catch(_){ return; }
+  ["rooms","storages","cards","equipment","history"].forEach(k=>{ if(!Array.isArray(DB[k])) DB[k]=[]; });
+  bumpUid();
+  if(SESSION){ SESSION = user(SESSION.id) || null; if(!SESSION){ nav=[]; closeSheet(); } }
+  if($("#modal").classList.contains("hidden")) render();
+});
 (async function boot(){
   DB = await Persist.load();
   if(!DB || !DB.users || !DB.users.length){ DB = emptyDB(); Persist.save(DB); }
   ["rooms","storages","cards","equipment","history"].forEach(k=>{ if(!Array.isArray(DB[k])) DB[k]=[]; });
   DB.users.forEach(u=>{ if(!u.pin) u.pin="1111"; });
+  bumpUid();
   nav=[{view:"dash",params:{}}];
   const handed = consumeUrlCard();
   render();
