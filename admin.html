@@ -68,6 +68,20 @@ h2.sec::after{content:"";flex:1;height:1px;background:var(--line)}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.5px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .grow{flex:1}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--mist);margin:4px 0 16px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.map-area{margin-bottom:22px}
+.map-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.map-head h3{margin:0;font-family:var(--display);font-size:20px;letter-spacing:.6px;text-transform:uppercase}
+.map-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px}
+.cell{position:relative;overflow:hidden;min-height:84px;border-radius:10px;background:var(--slab);border:1px solid var(--c,var(--line));
+  color:inherit;font:inherit;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:10px 4px 6px}
+.cell::before{content:"";position:absolute;inset:0 0 auto 0;height:5px;background:var(--c,var(--st-available))}
+.cell:hover{background:#243549}
+.cell .n{font-family:var(--display);font-weight:600;font-size:18px;letter-spacing:.5px}
+.cell .k{font-size:10px;color:var(--dim);letter-spacing:.5px;text-transform:uppercase}
+.cell.add{border-style:dashed;border-color:var(--line);color:var(--mist);font-size:26px}
+.cell.add::before{display:none}
 .stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
 .stat{background:var(--slab);border:1px solid var(--line);border-left:4px solid var(--c,var(--line));border-radius:var(--r);padding:12px 14px;text-align:left}
 .stat b{display:block;font-family:var(--display);font-size:32px;line-height:1}
@@ -104,6 +118,8 @@ th{text-align:left;font-family:var(--display);font-weight:600;letter-spacing:1px
 td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 tr:last-child td{border-bottom:0}
 tr:hover td{background:rgba(255,255,255,.02)}
+tr.clk{cursor:pointer} tr.clk:hover td{background:rgba(255,255,255,.05)}
+.sheet.wide{max-width:820px}
 td.act{white-space:nowrap;text-align:right}
 td.act .btn+.btn{margin-left:4px}
 .warn{color:var(--st-attention)}
@@ -252,8 +268,67 @@ function log(action,o={}){
 function normalise(db){
   if(!db || typeof db!=="object" || Array.isArray(db)) db={};
   COLLECTIONS.forEach(k=>{ if(!Array.isArray(db[k])) db[k]=[]; });
+  return ensureAccounts(db);
+}
+/* Access model (same as index.html): ONE shared staff PIN and ONE admin PIN.
+   Older per-person accounts stay as "retired" only so history keeps their names. */
+const validPin = p => /^\d{4}$/.test(String(p??""));
+/* Built-in admin login (password stored only as its hash). Change it under Access. */
+const DEFAULT_ADMIN = {username:"Admin", password_hash:"pbkdf2:sha256:260000$IrBfOswUM7KwcPJZ$20a131a6402fb718d4188a339933595ad0c17330e4b56f66961a904840cfb047"};
+function ensureAccounts(db){
+  const newId = () => { let m=Date.now()%1e7; COLLECTIONS.forEach(k=>(db[k]||[]).forEach(x=>{ if(typeof x.id==="number"&&x.id>m) m=x.id; })); return m+1; };
+  const legacy = db.users.filter(u=>!u.shared);
+  if(!db.users.some(u=>u.shared==="admin")){
+    db.users.unshift({id:newId(),shared:"admin",name:"Admin",email:"",role:"admin",username:"",password_hash:"",created_at:Date.now()});
+  }
+  const adm0=db.users.find(u=>u.shared==="admin");
+  if(!adm0.username||!adm0.password_hash){ adm0.username=DEFAULT_ADMIN.username; adm0.password_hash=DEFAULT_ADMIN.password_hash; }
+  if(!db.users.some(u=>u.shared==="staff")){
+    const old = legacy.find(u=>u.role!=="admin"&&validPin(u.pin));
+    db.users.splice(1,0,{id:newId(),shared:"staff",name:"Staff",email:"",role:"staff",pin:old?String(old.pin):"",created_at:Date.now()});
+  }
+  // Staff members: names only (everyone uses the shared PIN) so history shows who did what.
+  // Old personal admin accounts are retired; removed members are "archived". Both keep their history.
+  legacy.forEach(u=>{ if(u.role==="admin") u.retired=true; else { u.role="staff"; delete u.retired; delete u.pin; } });
+  const adm=db.users.find(u=>u.shared==="admin");
+  if(adm && "pin" in adm){ delete adm.pin; }       // admin now signs in with username + password
   return db;
 }
+const adminAcc = () => DB.users.find(u=>u.shared==="admin");
+const staffAcc = () => DB.users.find(u=>u.shared==="staff");
+const members  = () => DB.users.filter(u=>!u.shared&&!u.retired&&!u.archived).sort((a,b)=>String(a.name).localeCompare(b.name));
+const archived = () => DB.users.filter(u=>!u.shared&&u.archived);
+const nameTaken = (name,except) => members().some(u=>u!==except&&String(u.name).trim().toLowerCase()===name.trim().toLowerCase());
+/* Admin password — stored in Werkzeug's format ("pbkdf2:sha256:<iter>$<salt>$<hex>")
+   so the Flask backend on Railway can verify it with check_password_hash() as-is. */
+const PW_ITER = 260000;
+const adminReady = () => { const a=adminAcc(); return !!(a && a.username && a.password_hash); };
+const sameUser = (a,b) => String(a||"").trim().toLowerCase()===String(b||"").trim().toLowerCase();
+async function pbkdf2Hex(password,salt,iter){
+  if(!(window.crypto&&crypto.subtle)) throw new Error("Secure context needed (https or localhost)");
+  const enc=new TextEncoder();
+  const key=await crypto.subtle.importKey("raw",enc.encode(password),"PBKDF2",false,["deriveBits"]);
+  const bits=await crypto.subtle.deriveBits({name:"PBKDF2",hash:"SHA-256",salt:enc.encode(salt),iterations:iter},key,256);
+  return [...new Uint8Array(bits)].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+async function hashPassword(password){
+  const abc="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const salt=[...crypto.getRandomValues(new Uint8Array(16))].map(b=>abc[b%abc.length]).join("");
+  return `pbkdf2:sha256:${PW_ITER}$${salt}$${await pbkdf2Hex(password,salt,PW_ITER)}`;
+}
+async function checkPassword(stored,password){
+  const m=/^pbkdf2:sha256:(\d+)\$([^$]+)\$([0-9a-f]+)$/.exec(String(stored||"")); if(!m) return false;
+  const h=await pbkdf2Hex(password,m[2],+m[1]);
+  let d=h.length^m[3].length; for(let i=0;i<h.length;i++) d|=h.charCodeAt(i)^(m[3].charCodeAt(i)||0);
+  return d===0;
+}
+function credError(user,pw,pw2){
+  if(!/^[A-Za-z0-9._-]{3,32}$/.test(user)) return "Username: 3–32 letters, numbers, . _ -";
+  if(pw.length<8) return "Password must be at least 8 characters";
+  if(pw!==pw2) return "The passwords do not match";
+  return null;
+}
+
 
 /* ==========================================================================
    3. UTIL
@@ -344,8 +419,8 @@ function checkIntegrity(){
     if(r.room_number==null||String(r.room_number).trim()==="") add(false,"Room without number",`Room record #${r.id} has no number.`,null,{view:"rooms",q:String(r.id)});
   });
 
-  if(!DB.users.some(u=>u.role==="admin")) add(true,"No admin account","Nobody can open this panel or manage staff.",null,{view:"users"});
-  DB.users.forEach(u=>{ if(!/^\d{4}$/.test(String(u.pin||""))) add(true,"Invalid PIN",`${u.name} cannot sign in (PIN "${u.pin||""}").`,null,{view:"users"}); });
+  if(!adminReady()) add(true,"Admin login not set","Nobody can open this panel or the admin features.",null,{view:"users"});
+  if(!validPin(staffAcc().pin)) add(true,"Staff PIN not set","Valets cannot sign in to the app.",null,{view:"users"});
   return out;
 }
 
@@ -354,14 +429,14 @@ function checkIntegrity(){
    ========================================================================== */
 const V = {};
 const NAV = [
-  ["overview","Overview"],["trace","Trace / find"],["rooms","Rooms"],["storages","Storages"],
-  ["cards","Key cards"],["equipment","Equipment"],["users","Staff"],["history","History"],["data","Backup & data"]
+  ["overview","Overview"],["trace","Trace / find"],["rooms","Rooms"],["storages","Storages"],["map","Storage map"],
+  ["cards","Key cards"],["equipment","Equipment"],["users","Staff & access"],["history","History"],["data","Backup & data"]
 ];
 function go(v,p={}){ view=v; params=p; render(); window.scrollTo(0,0); }
 function render(){
   if(!SESSION){ $("#app").innerHTML=viewLogin(); return; }
   const issues=checkIntegrity().length;
-  const counts={rooms:DB.rooms.length,storages:DB.storages.length,cards:DB.cards.length,equipment:DB.equipment.length,users:DB.users.length,history:DB.history.length};
+  const counts={rooms:DB.rooms.length,storages:DB.storages.length,cards:DB.cards.length,equipment:DB.equipment.length,history:DB.history.length};
   const fn=V[view]||V.overview;
   const out=fn(params);
   $("#app").innerHTML=`
@@ -382,28 +457,38 @@ function render(){
 
 /* ---------- login ---------- */
 function viewLogin(){
-  const admins=DB.users.filter(u=>u.role==="admin");
   return `<div class="login">
     <div class="a">Ski Valet</div><div class="b">Admin</div><div class="c">Back-office for fixing storage records</div>
-    ${admins.length?`
-    <label class="f"><span>Admin</span><select class="input" id="lUser">${admins.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join("")}</select></label>
-    <label class="f"><span>PIN</span><input class="input" id="lPin" type="password" inputmode="numeric" maxlength="4" autocomplete="off" autofocus></label>
+    ${adminReady()?`
+    <label class="f"><span>Username</span><input class="input" id="lUser" autocomplete="username" autocapitalize="none" spellcheck="false" autofocus></label>
+    <label class="f"><span>Password</span><input class="input" id="lPass" type="password" autocomplete="current-password"></label>
     <button class="btn primary" style="width:100%" data-act="login">Sign in</button>
-    <p class="dim tiny" style="margin-top:14px">Only staff with the Admin role in the valet app can open this console.</p>`
-    :`<div class="banner">${DB.users.length
-        ?"No admin account exists in the data. Restore a backup, or create a recovery admin below (it is written to the history)."
-        :"No accounts on this device yet. Open the valet app here to create the first admin, or create it now."}</div>
-      <label class="f"><span>Name</span><input class="input" id="rName" value="${DB.users.length?"Recovery admin":""}" autocomplete="off"></label>
-      <label class="f"><span>New 4-digit PIN</span><input class="input" id="rPin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off"></label>
-      <button class="btn primary" style="width:100%" data-act="recover-admin">Create admin &amp; sign in</button>`}
+    <p class="dim tiny" style="margin-top:14px">Same admin login as the valet app.</p>`
+    :`<div class="banner">No admin login exists on this device yet. Create it now (or open the valet app here to do it).</div>
+      <label class="f"><span>Admin username</span><input class="input" id="rUser" autocomplete="username" autocapitalize="none" spellcheck="false"></label>
+      <label class="f"><span>Password (min. 8 characters)</span><input class="input" id="rPass" type="password" autocomplete="new-password"></label>
+      <label class="f"><span>Repeat password</span><input class="input" id="rPass2" type="password" autocomplete="new-password"></label>
+      ${validPin(staffAcc().pin)?"":`<label class="f"><span>Staff PIN (4 digits, shared by all valets)</span><input class="input" id="rStaff" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off"></label>`}
+      <button class="btn primary" style="width:100%" data-act="recover-admin">Save &amp; sign in</button>`}
   </div>`;
 }
-function doLogin(){
+async function doLogin(){
   if(!$("#lUser")) return;
-  const u=user(+$("#lUser").value), pin=$("#lPin").value.trim();
-  if(!u || u.role!=="admin" || String(u.pin)!==pin){ toast("Wrong PIN","err"); $("#lPin").value=""; return; }
-  SESSION=u; try{ sessionStorage.setItem(SESSION_KEY,String(u.id)); }catch(e){}
+  const a=adminAcc(), u=$("#lUser").value, p=$("#lPass").value;
+  let ok=false; try{ ok = sameUser(u,a.username) && await checkPassword(a.password_hash,p); }catch(e){ toast(e.message,"err"); return; }
+  if(!ok){ toast("Wrong username or password","err"); $("#lPass").value=""; return; }
+  SESSION=a; try{ sessionStorage.setItem(SESSION_KEY,String(a.id)); }catch(e){}
   log("Admin console opened",{}); Store.write(DB); go("overview");
+}
+async function createAdminLogin(){
+  const user=$("#rUser").value.trim(), p1=$("#rPass").value, p2=$("#rPass2").value, sf=$("#rStaff"), ps=sf?sf.value.trim():String(staffAcc().pin);
+  const err=credError(user,p1,p2); if(err){ toast(err,"err"); return; }
+  if(!validPin(ps)){ toast("Staff PIN must be 4 digits","err"); return; }
+  let hash; try{ hash=await hashPassword(p1); }catch(e){ toast(e.message,"err"); return; }
+  if(adminReady()){ render(); return; }                // set meanwhile in the app
+  const a=adminAcc(); a.username=user; a.password_hash=hash; a.updated_at=now(); staffAcc().pin=ps; SESSION=a;
+  try{ sessionStorage.setItem(SESSION_KEY,String(a.id)); }catch(_){}
+  log("Admin login created",{notes:user}); Store.write(DB); go("overview");
 }
 
 /* ---------- overview ---------- */
@@ -422,7 +507,7 @@ V.overview = () => {
       ${S(DB.equipment.reduce((a,e)=>a+(+e.quantity||0),0),"Items stored","var(--st-occupied)","equipment")}
       ${S(st("guest_using"),"With guests","var(--st-guest)","storages")}
       ${S(st("attention"),"Need attention","var(--st-attention)","storages")}
-      ${S(DB.users.length,"Staff","var(--mist)","users")}
+      ${S(validPin(staffAcc().pin)?"✓":"!","Staff PIN","var(--mist)","users")}
       ${S(DB.history.length,"History records","var(--dim)","history")}
     </div>
     <h2 class="sec">Data health · ${issues.length?issues.length+" issue"+(issues.length===1?"":"s"):"clean"}</h2>
@@ -472,6 +557,48 @@ function traceStorage(s, why){
       <button class="btn sm" data-act="link-room-cards" data-id="${s.id}">Link them here</button></div>`:""}
     <div class="hist" style="margin-top:12px">${hist.map(histEvent).join("")||`<div class="dim tiny">No history for this chain.</div>`}</div>
   </div>`;
+}
+/* Click any row → everything behind it, without hunting for the room/storage link. */
+function openDetail(col,id){
+  const rec=DB[col]&&DB[col].find(x=>x.id===id); if(!rec) return;
+  const H = list => `<div class="hist">${list.slice(0,15).map(histEvent).join("")||`<div class="dim tiny">No history.</div>`}</div>`;
+  const kv = (k,v) => `<div class="row"><span class="grow muted">${k}</span><b>${v}</b></div>`;
+  let title="", sub="", body="";
+  if(col==="storages"){
+    title=rec.storage_number; sub=`${esc(rec.section||"Unassigned area")} · ${STATUS[rec.status]||esc(rec.status)}`;
+    body=traceStorage(rec,"Storage");
+  } else if(col==="rooms"){
+    const sts=storagesOfRoom(rec.id), cs=cardsOfRoom(rec.id);
+    title="Room "+rec.room_number; sub=`${esc(rec.guest_name||"No guest name")} · ${ROOM_STATUS[rec.status]||esc(rec.status||"staying")}`;
+    body=`<div class="panel tiny" style="margin-bottom:12px">
+        ${kv("Departure",esc(rec.departure||"—"))}${kv("Key cards",cs.map(c=>`<span class="mono">${esc(c.card_code)}</span>`).join(", ")||"—")}
+        ${kv("Storages",sts.map(s=>esc(s.storage_number)).join(", ")||"—")}${kv("Items",sts.reduce((a,s)=>a+eqCount(s.id),0))}</div>
+      ${sts.map(s=>traceStorage(s,"Storage "+s.storage_number)).join("")
+        ||`<div class="panel" style="margin-bottom:12px"><p class="muted tiny" style="margin:0 0 10px">No storage is linked to this room.</p>${H(DB.history.filter(h=>h.room_id===rec.id))}</div>`}`;
+  } else if(col==="cards"){
+    const st=stor(rec.storage_id), r=room(rec.room_id);
+    title="Card "+rec.card_code; sub=`${CARD_STATUS[rec.status]||esc(rec.status)} · ${r?"Room "+esc(r.room_number):"no room"}`;
+    body=st?traceStorage(st,`Card ${rec.card_code} opens this storage`)
+      :`<div class="panel" style="margin-bottom:12px">${kv("Room",r?esc(r.room_number):rec.room_id!=null?`<span class="warn">deleted #${esc(rec.room_id)}</span>`:"—")}
+        ${kv("Storage",rec.storage_id!=null?`<span class="warn">deleted #${esc(rec.storage_id)}</span>`:"none")}
+        ${rec.status==="released"?kv("Released",ago(rec.released_at)):""}<div style="margin-top:10px">${H(DB.history.filter(h=>h.key_card_id===rec.id))}</div></div>`;
+  } else if(col==="equipment"){
+    const st=stor(rec.storage_id);
+    title=(CATS[rec.category]||rec.category)+" ×"+rec.quantity; sub=[rec.size,rec.type,rec.description].filter(Boolean).map(esc).join(" · ")||"No size or type";
+    body=st?traceStorage(st,"Stored in "+st.storage_number)
+      :`<div class="issue hot"><div class="grow"><b>Orphan item</b><p>Its storage #${esc(rec.storage_id)} no longer exists.</p></div></div>`;
+  } else if(col==="users"){
+    const mine=DB.history.filter(h=>h.user_id===rec.id);
+    title=rec.name; sub=`${rec.shared?(rec.shared==="admin"?"Admin login":"Shared staff account"):rec.archived?"Removed staff member":"Staff member"} · ${mine.length} actions`;
+    body=`<div class="panel">${H(mine)}</div>`;
+  }
+  const canEdit=SCHEMA[col]&&!(col==="users");
+  openSheet(`<h3>${esc(title)}</h3><p class="sub">${sub}</p>${body}
+    <div class="foot">
+      ${canEdit?`<button class="btn danger" data-act="del" data-col="${col}" data-id="${id}">Delete</button>`:""}
+      <span class="grow"></span><button class="btn" data-act="close">Close</button>
+      ${canEdit?`<button class="btn primary" data-act="edit" data-col="${col}" data-id="${id}">Edit</button>`:""}
+      ${col==="users"&&!rec.shared?`<button class="btn primary" data-act="edit-member" data-id="${id}">Edit</button>`:""}</div>`,true);
 }
 V.trace = (p) => {
   const q=(p.q||"").trim();
@@ -611,21 +738,6 @@ const SCHEMA = {
     sort:(a,b)=>String(stor(a.storage_id)?.storage_number||"~").localeCompare(String(stor(b.storage_id)?.storage_number||"~"),undefined,{numeric:true}),
     check(v){ if(!(v.quantity>=1)) return "Quantity must be at least 1"; },
     del(e){ return {run(){ DB.equipment=DB.equipment.filter(x=>x!==e); }}; }
-  },
-  users:{ title:"Staff", one:"staff member", label:u=>u.name,
-    fields:[
-      {k:"name",l:"Name",req:true},{k:"email",l:"Email"},
-      {k:"pin",l:"4-digit PIN",req:true},
-      {k:"role",l:"Role",type:"select",opts:()=>[{v:"staff",l:"Ski Valet staff"},{v:"admin",l:"Admin"}],def:"staff"}],
-    cols:[["Name",u=>`<b>${esc(u.name)}</b>`],["Email",u=>esc(u.email||"—")],["Role",u=>chip(u.role==="admin"?"occupied":"available",u.role==="admin"?"Admin":"Staff")],
-      ["PIN",u=>`<span class="mono">${esc(u.pin)}</span>`],["Actions",u=>`<span class="lnk" data-act="go" data-view="history" data-q="${esc(u.name)}">${DB.history.filter(h=>h.user_id===u.id).length}</span>`]],
-    text:u=>[u.name,u.email,u.role].join(" "),
-    sort:(a,b)=>String(a.name).localeCompare(b.name),
-    check(v,rec){ if(!/^\d{4}$/.test(v.pin)) return "PIN must be exactly 4 digits";
-      if(rec&&rec.role==="admin"&&v.role!=="admin"&&DB.users.filter(u=>u.role==="admin").length<2) return "Keep at least one admin"; },
-    del(u){ if(u.id===SESSION.id) return {block:"You can't delete the account you are signed in with."};
-      if(u.role==="admin"&&DB.users.filter(x=>x.role==="admin").length<2) return {block:"This is the last admin."};
-      return {warn:"History entries stay, but will show “System” instead of the name.",run(){ DB.users=DB.users.filter(x=>x!==u); }}; }
   }
 };
 
@@ -650,7 +762,7 @@ function tableView(col){
         params.q=$("#tblQ").value; params.f=f;
         const rows=[...DB[col]].filter(r=>(!f||r[S.filter.k]===f)&&(!q||S.text(r).toLowerCase().includes(q))).sort(S.sort);
         const LIM=300;
-        $("#tblBody").innerHTML=rows.slice(0,LIM).map(r=>`<tr>${S.cols.map(c=>`<td>${c[1](r)}</td>`).join("")}
+        $("#tblBody").innerHTML=rows.slice(0,LIM).map(r=>`<tr class="clk" data-act="detail" data-col="${col}" data-id="${r.id}">${S.cols.map(c=>`<td>${c[1](r)}</td>`).join("")}
           <td class="act"><button class="btn sm" data-act="edit" data-col="${col}" data-id="${r.id}">Edit</button><button class="btn sm danger" data-act="del" data-col="${col}" data-id="${r.id}">✕</button></td></tr>`).join("")
           ||`<tr><td colspan="${S.cols.length+1}" class="dim" style="text-align:center;padding:24px">Nothing matches.</td></tr>`;
         $("#tblPager").textContent=rows.length>LIM?`Showing ${LIM} of ${rows.length} — refine the filter`:`${rows.length} shown`;
@@ -659,7 +771,187 @@ function tableView(col){
     }};
   };
 }
-["rooms","storages","cards","equipment","users"].forEach(c=>V[c]=tableView(c));
+["rooms","storages","cards","equipment"].forEach(c=>V[c]=tableView(c));
+
+/* ---------- storage map ---------- */
+const STC = k => `var(--st-${k==="guest_using"?"guest":k})`;
+const areaOf = s => s.section||"Unassigned area";
+V.map = () => {
+  const areas=[...new Set(DB.storages.map(areaOf))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+  const sorted = a => DB.storages.filter(s=>areaOf(s)===a).sort((x,y)=>String(x.storage_number).localeCompare(String(y.storage_number),undefined,{numeric:true}));
+  const busy = s => s.status!=="available"||s.room_id!=null||eqCount(s.id)>0||cardsOfStorage(s.id).length>0;
+  return {body:`
+    <h1>Storage map</h1>
+    <p class="lead">Same hall layout as the valet app. Click a location to edit or delete it; use ＋ to add one to an area. ${DB.storages.length} locations in ${areas.length} area${areas.length===1?"":"s"}.</p>
+    <div class="toolbar">
+      <button class="btn primary" data-act="map-range">+ Add range</button>
+      <button class="btn" data-act="map-new">+ New storage</button>
+    </div>
+    <div class="legend">${Object.entries(STATUS).map(([k,l])=>`<span><i style="background:${STC(k)}"></i>${esc(l)}</span>`).join("")}</div>
+    ${areas.length?areas.map(a=>{ const rows=sorted(a), free=rows.filter(s=>!busy(s)).length;
+      return `<div class="map-area">
+        <div class="map-head"><h3>${esc(a)}</h3><span class="dim tiny">${rows.length} locations · ${rows.length-free} in use</span><span class="grow"></span>
+          <button class="btn sm" data-act="map-rename" data-area="${esc(a)}">Rename</button>
+          ${free?`<button class="btn sm danger" data-act="map-drop-free" data-area="${esc(a)}">Delete ${free} free</button>`:""}</div>
+        <div class="map-grid">${rows.map(s=>`<button class="cell" style="--c:${STC(s.status)}" data-act="map-cell" data-id="${s.id}" title="${esc(STATUS[s.status]||s.status)}">
+            <span class="n">${esc(s.storage_number)}</span>
+            <span class="k">${room(s.room_id)?"R"+esc(room(s.room_id).room_number):"free"}</span>
+            ${eqCount(s.id)?`<span class="k" style="color:var(--frost,#DCEBFA)">${eqCount(s.id)} items</span>`:""}</button>`).join("")}
+          <button class="cell add" data-act="map-new" data-area="${esc(a)}" title="Add a storage to ${esc(a)}">＋</button></div></div>`; }).join("")
+    :`<div class="panel dim">No storage locations yet. Use “Add range” to create a whole rack row.</div>`}`};
+};
+function mapCell(id){
+  const s=stor(id); if(!s) return;
+  const eq=eqOf(s.id), cs=cardsOfStorage(s.id);
+  openSheet(`<h3>${esc(s.storage_number)}</h3>
+    <p class="sub">${esc(areaOf(s))} · ${chip(s.status,STATUS[s.status]||s.status)} · ${room(s.room_id)?"Room "+esc(room(s.room_id).room_number):"no room"}</p>
+    <div class="panel tiny">
+      <div class="row"><span class="grow muted">Equipment</span><b>${eq.length?eq.map(e=>`${esc(CATS[e.category]||e.category)} ×${esc(e.quantity)}`).join(", "):"—"}</b></div>
+      <div class="row"><span class="grow muted">Key cards</span><b class="mono">${cs.map(c=>esc(c.card_code)).join(", ")||"—"}</b></div>
+      <div class="row"><span class="grow muted">Updated</span><b>${ago(s.updated_at)}</b></div>
+    </div>
+    <div class="foot">
+      <button class="btn danger" data-act="map-del" data-id="${s.id}">Delete</button>
+      <button class="btn ghost" data-act="trace" data-q="${esc(s.storage_number)}">Trace</button>
+      <span class="grow"></span>
+      <button class="btn" data-act="close">Close</button>
+      <button class="btn primary" data-act="map-edit" data-id="${s.id}">Edit</button></div>`);
+}
+function mapNew(area){
+  openForm("storages",null);
+  if(area){ const f=$('#frm [name="section"]'); if(f) f.value=area; }
+}
+function mapRange(){
+  const areas=[...new Set(DB.storages.map(areaOf))];
+  openSheet(`<h3>Add a range</h3><p class="sub">Creates a whole rack row, e.g. S-101 to S-112. Numbers that already exist are skipped.</p>
+    <label class="f"><span>Area</span><input class="input" id="mrArea" list="mrAreas" placeholder="Main hall" autocomplete="off">
+      <datalist id="mrAreas">${areas.map(a=>`<option value="${esc(a)}">`).join("")}</datalist></label>
+    <label class="f"><span>Prefix</span><input class="input" id="mrPfx" value="S-" autocomplete="off"></label>
+    <div class="row"><label class="f grow"><span>From</span><input class="input" id="mrFrom" inputmode="numeric" placeholder="101"></label>
+      <label class="f grow"><span>To</span><input class="input" id="mrTo" inputmode="numeric" placeholder="112"></label></div>
+    <div class="foot"><span class="grow"></span><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="map-range-go">Create</button></div>`);
+  setTimeout(()=>$("#mrArea")?.focus(),50);
+}
+function mapRangeGo(){
+  const area=$("#mrArea").value.trim()||"Unassigned area", pfx=$("#mrPfx").value.trim().toUpperCase();
+  const from=parseInt($("#mrFrom").value,10), to=parseInt($("#mrTo").value,10);
+  if(isNaN(from)||isNaN(to)||from<0||to<from){ toast("Check the From / To numbers","err"); return; }
+  if(to-from>199){ toast("Maximum 200 locations at a time","err"); return; }
+  const nums=[]; for(let i=from;i<=to;i++){ const n=pfx+i; if(!DB.storages.some(s=>normCode(s.storage_number)===normCode(n))) nums.push(n); }
+  if(!nums.length){ toast("All of those numbers already exist","info"); return; }
+  commit("Storage range created",()=>{ nums.forEach(n=>DB.storages.push({id:nextId(),storage_number:n,section:area,status:"available",room_id:null,created_at:now(),updated_at:now()})); },
+    {action:"Storage range created",notes:`${area}: ${nums[0]} – ${nums[nums.length-1]} (${nums.length})`});
+  closeSheet(); toast(nums.length+" locations created");
+}
+function mapRename(area){
+  openSheet(`<h3>Rename area</h3><p class="sub">${esc(area)} · every location in it moves to the new name. Using an existing name merges the areas.</p>
+    <label class="f"><span>New name</span><input class="input" id="mrName" value="${esc(area)}" autocomplete="off"></label>
+    <div class="foot"><span class="grow"></span><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="map-rename-go" data-area="${esc(area)}">Save</button></div>`);
+  setTimeout(()=>$("#mrName")?.select(),50);
+}
+function mapRenameGo(area){
+  const name=$("#mrName").value.trim(); if(!name){ toast("Enter a name","err"); return; }
+  if(name===area){ closeSheet(); return; }
+  commit("Area renamed",()=>{ DB.storages.filter(s=>areaOf(s)===area).forEach(s=>{ s.section=name; s.updated_at=now(); }); },{action:"Area renamed",notes:`${area} → ${name}`});
+  closeSheet(); toast("Area renamed");
+}
+function mapDropFree(area){
+  const rows=DB.storages.filter(s=>areaOf(s)===area&&s.status==="available"&&s.room_id==null&&!eqCount(s.id)&&!cardsOfStorage(s.id).length);
+  if(!rows.length) return;
+  confirmSheet(`Delete ${rows.length} free location${rows.length===1?"":"s"}`,`In ${esc(area)}: ${rows.map(s=>esc(s.storage_number)).join(", ")}. Locations in use are kept.`,"Delete",
+    ()=>{ const ids=new Set(rows.map(s=>s.id)); commit("Free locations deleted",()=>{ DB.storages=DB.storages.filter(s=>!ids.has(s.id)); },{action:"Free locations deleted",notes:`${area}: ${rows.length}`}); toast(rows.length+" deleted","info"); });
+}
+
+/* ---------- access ---------- */
+V.users = () => {
+  const acts = id => DB.history.filter(h=>h.user_id===id).length;
+  const retired = DB.users.filter(u=>u.retired), st=staffAcc(), a=adminAcc(), arch=archived();
+  const hist = u => `<span class="lnk" data-act="go" data-view="history" data-q="${esc(u.name)}">${acts(u.id)}</span>`;
+  return {body:`
+    <h1>Staff &amp; access</h1>
+    <p class="lead">Every valet signs in with the same staff PIN and then taps their name, so the history shows who did what. The admin has its own username and password.</p>
+    <h3 style="margin:0 0 10px">Staff members · ${members().length}</h3>
+    <div class="toolbar">
+      <input class="input" id="mName" placeholder="Full name" autocomplete="off" style="max-width:260px">
+      <input class="input" id="mMail" placeholder="Email (optional)" autocomplete="off" style="max-width:260px">
+      <button class="btn primary" data-act="add-member">+ Add staff member</button>
+    </div>
+    <div class="tbl-wrap" style="margin-bottom:22px"><table><thead><tr><th>Name</th><th>Email</th><th>Actions</th><th>Added</th><th></th></tr></thead><tbody>
+      ${members().map(u=>`<tr class="clk" data-act="detail" data-col="users" data-id="${u.id}"><td><b>${esc(u.name)}</b></td><td>${esc(u.email||"—")}</td><td>${hist(u)}</td><td>${u.created_at?fmtDT(u.created_at):"—"}</td>
+        <td class="act"><button class="btn sm" data-act="edit-member" data-id="${u.id}">Edit</button><button class="btn sm danger" data-act="rm-member" data-id="${u.id}">Remove</button></td></tr>`).join("")
+        ||`<tr><td colspan="5" class="dim" style="text-align:center;padding:20px">No staff members yet — everyone signs in as “Staff”.</td></tr>`}
+    </tbody></table></div>
+    ${arch.length?`<p class="dim tiny" style="margin:-10px 0 22px">Removed (history kept): ${arch.map(u=>`${esc(u.name)} · ${hist(u)} <span class="lnk" data-act="restore-member" data-id="${u.id}">restore</span>`).join(" &nbsp;|&nbsp; ")}</p>`:""}
+    <div class="grid2">
+      <div class="panel">
+        <h3 style="margin:0 0 4px">Staff PIN</h3>
+        <p class="muted tiny" style="margin:0 0 12px">Shared by every valet in the app.<br>Current PIN <span class="mono">${validPin(st.pin)?esc(st.pin):"not set"}</span> ·
+          <span class="lnk" data-act="go" data-view="history" data-q="${esc(st.name)}">${acts(st.id)} actions</span></p>
+        <div class="row"><input class="input" id="pin_staff" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="New 4-digit PIN" autocomplete="off" style="max-width:180px">
+        <button class="btn primary" data-act="set-pin">Change</button></div>
+      </div>
+      <div class="panel">
+        <h3 style="margin:0 0 4px">Admin login</h3>
+        <p class="muted tiny" style="margin:0 0 12px">Username <span class="mono">${esc(a.username)}</span> ·
+          <span class="lnk" data-act="go" data-view="history" data-q="${esc(a.name)}">${acts(a.id)} actions</span></p>
+        <form id="acFrm" onsubmit="return false">
+          <label class="f"><span>Current password</span><input class="input" id="acCur" type="password" autocomplete="current-password"></label>
+          <label class="f"><span>Username</span><input class="input" id="acUser" value="${esc(a.username)}" autocapitalize="none" spellcheck="false" autocomplete="username"></label>
+          <label class="f"><span>New password (min. 8)</span><input class="input" id="acPass" type="password" autocomplete="new-password"></label>
+          <label class="f"><span>Repeat new password</span><input class="input" id="acPass2" type="password" autocomplete="new-password"></label>
+        </form>
+        <button class="btn primary" data-act="set-admin">Save admin login</button>
+      </div>
+    </div>
+    ${retired.length?`<p class="dim tiny" style="margin-top:16px">${retired.length} older personal account${retired.length===1?"":"s"} (${retired.map(u=>esc(u.name)).join(", ")}) can no longer sign in; kept only so past history shows who did what.</p>`:""}`};
+};
+function setPin(){
+  const v=$("#pin_staff").value.trim(), st=staffAcc();
+  if(!validPin(v)){ toast("PIN must be exactly 4 digits","err"); return; }
+  commit("Staff PIN changed",()=>{ st.pin=v; st.updated_at=now(); });
+  toast("Staff PIN updated");
+}
+function addMember(){
+  const name=$("#mName").value.trim(), email=$("#mMail").value.trim();
+  if(!name){ toast("Enter a name","err"); return; }
+  if(nameTaken(name)){ toast("That name already exists","err"); return; }
+  commit("Staff member added",()=>{ DB.users.push({id:nextId(),name,email,role:"staff",created_at:now()}); },{action:"Staff member added",notes:name});
+  toast(name+" added");
+}
+function editMember(id){
+  const u=user(id); if(!u) return;
+  openSheet(`<h3>Edit staff member</h3><p class="sub">id ${u.id} · ${acts0(u.id)} actions in history</p>
+    <label class="f"><span>Name *</span><input class="input" id="emName" value="${esc(u.name)}"></label>
+    <label class="f"><span>Email</span><input class="input" id="emMail" value="${esc(u.email||"")}"></label>
+    <div class="foot"><span class="grow"></span><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="save-member" data-id="${u.id}">Save</button></div>`);
+}
+const acts0 = id => DB.history.filter(h=>h.user_id===id).length;
+function saveMember(id){
+  const u=user(id), name=$("#emName").value.trim(), email=$("#emMail").value.trim(); if(!u) return;
+  if(!name){ toast("Enter a name","err"); return; }
+  if(nameTaken(name,u)){ toast("That name already exists","err"); return; }
+  const old=u.name;
+  commit("Staff member edited",()=>{ u.name=name; u.email=email; u.updated_at=now(); },{action:"Staff member edited",notes:old===name?name:`${old} → ${name}`});
+  closeSheet(); toast("Saved");
+}
+function removeMember(id){
+  const u=user(id); if(!u||u.shared) return;
+  confirmSheet("Remove "+esc(u.name),"They will no longer appear at sign-in. Their history stays and they can be restored.","Remove",
+    ()=>{ commit("Staff member removed",()=>{ u.archived=true; u.updated_at=now(); },{action:"Staff member removed",notes:u.name}); toast(u.name+" removed","info"); });
+}
+function restoreMember(id){
+  const u=user(id); if(!u) return;
+  if(nameTaken(u.name)){ toast("An active member already has that name","err"); return; }
+  commit("Staff member restored",()=>{ delete u.archived; u.updated_at=now(); },{action:"Staff member restored",notes:u.name});
+}
+async function setAdminLogin(){
+  const a=adminAcc(), cur=$("#acCur").value, user=$("#acUser").value.trim(), p1=$("#acPass").value, p2=$("#acPass2").value;
+  try{ if(!await checkPassword(a.password_hash,cur)){ toast("Current password is wrong","err"); return; } }catch(e){ toast(e.message,"err"); return; }
+  const err=credError(user,p1,p2); if(err){ toast(err,"err"); return; }
+  const hash=await hashPassword(p1);
+  commit("Admin login changed",()=>{ a.username=user; a.password_hash=hash; a.updated_at=now(); },{action:"Admin login changed",notes:user});
+  toast("Admin login updated");
+}
 
 function fieldHTML(f,val){
   const v=val??f.def??"";
@@ -774,7 +1066,7 @@ V.history = (p) => ({body:`
   <p class="lead">Full audit trail (the app keeps the latest 600 records). Admin changes are marked <span style="color:var(--signal)">[Admin]</span>.</p>
   <div class="toolbar">
     <div class="searchbar">🔎<input id="hQ" value="${esc(p.q||"")}" placeholder="Action, staff, room, storage, card, note…" autocomplete="off"></div>
-    <select class="input" id="hU"><option value="">Everyone</option>${DB.users.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join("")}<option value="sys">System</option></select>
+    <select class="input" id="hU"><option value="">Everyone</option>${DB.users.filter(u=>(!u.retired&&!u.archived)||DB.history.some(h=>h.user_id===u.id)).map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join("")}<option value="sys">System</option></select>
     <button class="btn ghost" data-act="csv" data-col="history">CSV</button>
   </div>
   <div class="hist" id="hList"></div><div class="pager" id="hPager"></div>`,
@@ -830,9 +1122,7 @@ V.data = () => {
 function validateDB(o){
   if(!o||typeof o!=="object"||Array.isArray(o)) return "Top level must be an object";
   for(const k of COLLECTIONS) if(o[k]!==undefined&&!Array.isArray(o[k])) return `"${k}" must be an array`;
-  if(!Array.isArray(o.users)||!o.users.length) return "At least one user is required";
   for(const k of COLLECTIONS) for(const x of (o[k]||[])) if(!x||typeof x!=="object"||x.id==null) return `Every ${k} record needs an id`;
-  if(!o.users.some(u=>u.role==="admin")) return "At least one admin is required";
   return null;
 }
 function replaceDB(next,label,notes){
@@ -840,7 +1130,7 @@ function replaceDB(next,label,notes){
   Snaps.push(label,DB);
   DB=normalise(next);
   const me=user(SESSION.id);
-  if(!me||me.role!=="admin"){ SESSION=DB.users.find(u=>u.role==="admin"); }
+  if(!me||me.shared!=="admin"){ SESSION=adminAcc(); }
   else SESSION=me;
   log(label,{notes}); Store.write(DB); render(); return true;
 }
@@ -855,7 +1145,7 @@ function importJSON(text,name){
 }
 
 /* ---------- modal ---------- */
-function openSheet(html){ const m=$("#modal"); m.innerHTML=`<div class="sheet">${html}</div>`; m.classList.remove("hidden");
+function openSheet(html,wide){ const m=$("#modal"); m.innerHTML=`<div class="sheet${wide?" wide":""}">${html}</div>`; m.classList.remove("hidden");
   m.onclick=e=>{ if(e.target===m) closeSheet(); }; }
 function closeSheet(){ const m=$("#modal"); m.classList.add("hidden"); m.innerHTML=""; }
 function confirmSheet(title,sub,btn,fn){
@@ -872,13 +1162,24 @@ document.addEventListener("click",e=>{
   const a=el.dataset.act, col=el.dataset.col, id=el.dataset.id?+el.dataset.id:null;
   switch(a){
     case "login": doLogin(); break;
-    case "recover-admin": { const name=$("#rName").value.trim(), pin=$("#rPin").value.trim();
-      if(!name){ toast("Enter a name","err"); break; }
-      if(!/^\d{4}$/.test(pin)){ toast("PIN must be 4 digits","err"); break; }
-      if(DB.users.some(u=>u.role==="admin")){ render(); break; }     // created meanwhile in the app
-      const u={id:nextId(),name,email:"",role:"admin",pin,created_at:now()}; DB.users.push(u); SESSION=u;
-      try{ sessionStorage.setItem(SESSION_KEY,String(u.id)); }catch(_){}
-      log("Recovery admin created",{notes:name}); Store.write(DB); go("overview"); break; }
+    case "recover-admin": createAdminLogin(); break;
+    case "set-pin": setPin(); break;
+    case "set-admin": setAdminLogin(); break;
+    case "add-member": addMember(); break;
+    case "map-cell": openDetail("storages",id); break;
+    case "detail": openDetail(col,id); break;
+    case "map-edit": closeSheet(); openForm("storages",id); break;
+    case "map-del": closeSheet(); askDelete("storages",id); break;
+    case "map-new": mapNew(el.dataset.area); break;
+    case "map-range": mapRange(); break;
+    case "map-range-go": mapRangeGo(); break;
+    case "map-rename": mapRename(el.dataset.area); break;
+    case "map-rename-go": mapRenameGo(el.dataset.area); break;
+    case "map-drop-free": mapDropFree(el.dataset.area); break;
+    case "edit-member": editMember(id); break;
+    case "save-member": saveMember(id); break;
+    case "rm-member": removeMember(id); break;
+    case "restore-member": restoreMember(id); break;
     case "signout": SESSION=null; try{ sessionStorage.removeItem(SESSION_KEY); }catch(_){} render(); break;
     case "go": go(el.dataset.view, el.dataset.q?{q:el.dataset.q}:{}); break;
     case "trace": closeSheet(); go("trace",{q:el.dataset.q}); break;
@@ -918,7 +1219,9 @@ document.addEventListener("click",e=>{
 });
 document.addEventListener("keydown",e=>{
   if(e.key==="Escape") closeSheet();
-  if(e.key==="Enter"&&e.target.id==="lPin") doLogin();
+  if(e.key==="Enter"&&(e.target.id==="lUser"||e.target.id==="lPass")) doLogin();
+  if(e.key==="Enter"&&(e.target.id==="mName"||e.target.id==="mMail")) addMember();
+  if(e.key==="Enter"&&/^(rUser|rPass|rPass2|rStaff)$/.test(e.target.id)) createAdminLogin();
   if(e.key==="Enter"&&e.target.closest&&e.target.closest("#frm")){ const b=$('[data-act="save"]'); b&&b.click(); }
 });
 
@@ -927,7 +1230,7 @@ window.addEventListener("storage",e=>{
   if(e.key!==KEY) return;
   if(e.newValue===null) DB=normalise(null);
   else { try{ DB=normalise(JSON.parse(e.newValue)); }catch(_){ return; } }
-  if(SESSION){ const u=user(SESSION.id); SESSION=u&&u.role==="admin"?u:null; if(!SESSION){ closeSheet(); render(); return; } }
+  if(SESSION){ const u=user(SESSION.id); SESSION=u&&u.shared==="admin"?u:null; if(!SESSION){ closeSheet(); render(); return; } }
   // don't clobber a form or raw editor the admin is typing in
   if(!$("#modal").classList.contains("hidden")||(view==="data"&&document.activeElement?.id==="rawDB")){ toast("Data changed in the valet app","info"); return; }
   render();
@@ -937,8 +1240,10 @@ window.addEventListener("storage",e=>{
    8. BOOT
    ========================================================================== */
 (async function boot(){
-  DB=normalise(await Store.load());   // no built-in accounts: the first admin is created in the app (or below)
-  try{ const sid=+sessionStorage.getItem(SESSION_KEY); const u=user(sid); if(u&&u.role==="admin") SESSION=u; }catch(e){}
+  const loaded=await Store.load();
+  DB=normalise(loaded);                // builds the shared staff/admin accounts (and migrates old ones)
+  if(loaded) Store.write(DB);
+  try{ const sid=+sessionStorage.getItem(SESSION_KEY); const u=user(sid); if(u&&u.shared==="admin"&&adminReady()) SESSION=u; }catch(e){}
   render();
 })();
 </script>

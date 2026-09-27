@@ -358,8 +358,68 @@ const COLLECTIONS = ["rooms","storages","cards","equipment","users","history"];
 function normaliseDB(db){
   if(!db || typeof db!=="object" || Array.isArray(db)) db = {};
   COLLECTIONS.forEach(k=>{ if(!Array.isArray(db[k])) db[k]=[]; });
+  return ensureAccounts(db);
+}
+/* Access model: ONE shared staff PIN for every valet and ONE admin PIN.
+   Older per-person accounts are kept only as "retired" so past history still
+   shows their names; they can no longer sign in. Same code in admin.html. */
+const validPin = p => /^\d{4}$/.test(String(p??""));
+/* Built-in admin login (password stored only as its hash). Change it under Access. */
+const DEFAULT_ADMIN = {username:"Admin", password_hash:"pbkdf2:sha256:260000$IrBfOswUM7KwcPJZ$20a131a6402fb718d4188a339933595ad0c17330e4b56f66961a904840cfb047"};
+function ensureAccounts(db){
+  const newId = () => { let m=Date.now()%1e7; COLLECTIONS.forEach(k=>(db[k]||[]).forEach(x=>{ if(typeof x.id==="number"&&x.id>m) m=x.id; })); return m+1; };
+  const legacy = db.users.filter(u=>!u.shared);
+  if(!db.users.some(u=>u.shared==="admin")){
+    db.users.unshift({id:newId(),shared:"admin",name:"Admin",email:"",role:"admin",username:"",password_hash:"",created_at:Date.now()});
+  }
+  const adm0=db.users.find(u=>u.shared==="admin");
+  if(!adm0.username||!adm0.password_hash){ adm0.username=DEFAULT_ADMIN.username; adm0.password_hash=DEFAULT_ADMIN.password_hash; }
+  if(!db.users.some(u=>u.shared==="staff")){
+    const old = legacy.find(u=>u.role!=="admin"&&validPin(u.pin));
+    db.users.splice(1,0,{id:newId(),shared:"staff",name:"Staff",email:"",role:"staff",pin:old?String(old.pin):"",created_at:Date.now()});
+  }
+  // Staff members: names only (everyone uses the shared PIN) so history shows who did what.
+  // Old personal admin accounts are retired; removed members are "archived". Both keep their history.
+  legacy.forEach(u=>{ if(u.role==="admin") u.retired=true; else { u.role="staff"; delete u.retired; delete u.pin; } });
+  const adm=db.users.find(u=>u.shared==="admin");
+  if(adm && "pin" in adm){ delete adm.pin; }       // admin now signs in with username + password
   return db;
 }
+const adminAcc = () => DB.users.find(u=>u.shared==="admin");
+const staffAcc = () => DB.users.find(u=>u.shared==="staff");
+const members  = () => DB.users.filter(u=>!u.shared&&!u.retired&&!u.archived).sort((a,b)=>String(a.name).localeCompare(b.name));
+const archived = () => DB.users.filter(u=>!u.shared&&u.archived);
+const nameTaken = (name,except) => members().some(u=>u!==except&&String(u.name).trim().toLowerCase()===name.trim().toLowerCase());
+/* Admin password — stored in Werkzeug's format ("pbkdf2:sha256:<iter>$<salt>$<hex>")
+   so the Flask backend on Railway can verify it with check_password_hash() as-is. */
+const PW_ITER = 260000;
+const adminReady = () => { const a=adminAcc(); return !!(a && a.username && a.password_hash); };
+const sameUser = (a,b) => String(a||"").trim().toLowerCase()===String(b||"").trim().toLowerCase();
+async function pbkdf2Hex(password,salt,iter){
+  if(!(window.crypto&&crypto.subtle)) throw new Error("Secure context needed (https or localhost)");
+  const enc=new TextEncoder();
+  const key=await crypto.subtle.importKey("raw",enc.encode(password),"PBKDF2",false,["deriveBits"]);
+  const bits=await crypto.subtle.deriveBits({name:"PBKDF2",hash:"SHA-256",salt:enc.encode(salt),iterations:iter},key,256);
+  return [...new Uint8Array(bits)].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+async function hashPassword(password){
+  const abc="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const salt=[...crypto.getRandomValues(new Uint8Array(16))].map(b=>abc[b%abc.length]).join("");
+  return `pbkdf2:sha256:${PW_ITER}$${salt}$${await pbkdf2Hex(password,salt,PW_ITER)}`;
+}
+async function checkPassword(stored,password){
+  const m=/^pbkdf2:sha256:(\d+)\$([^$]+)\$([0-9a-f]+)$/.exec(String(stored||"")); if(!m) return false;
+  const h=await pbkdf2Hex(password,m[2],+m[1]);
+  let d=h.length^m[3].length; for(let i=0;i<h.length;i++) d|=h.charCodeAt(i)^(m[3].charCodeAt(i)||0);
+  return d===0;
+}
+function credError(user,pw,pw2){
+  if(!/^[A-Za-z0-9._-]{3,32}$/.test(user)) return "Username: 3–32 letters, numbers, . _ -";
+  if(pw.length<8) return "Password must be at least 8 characters";
+  if(pw!==pw2) return "The passwords do not match";
+  return null;
+}
+
 
 /* ==========================================================================
    2. DOMAIN
@@ -464,7 +524,7 @@ const VIEWS = {};
 function render(){
   staleView=false;
   const {view,params} = current();
-  if(!SESSION){ $("#shell").innerHTML = DB.users.length ? viewLogin() : viewFirstRun(); return; }
+  if(!SESSION){ $("#shell").innerHTML = !adminReady() ? viewFirstRun() : adminLogin ? viewAdminLogin() : pinOk ? viewPickName() : viewLogin(); return; }
   const v = VIEWS[view] || VIEWS.dash;
   const out = v(params||{});
   $("#shell").innerHTML = `
@@ -482,13 +542,23 @@ function render(){
 /* ==========================================================================
    5. LOGIN
    ========================================================================== */
-let loginUser=null, pin="", pendingHandOff=null;
+let pin="", pendingHandOff=null, adminLogin=false, pinOk=false;
+/* After the shared PIN: each valet taps their own name (added by the admin). */
+function viewPickName(){
+  return `<div class="login">
+    <div class="brand"><div class="a">Staff PIN accepted</div><div class="b">Who are you?</div><div class="c">Tap your name</div></div>
+    <div class="list">${members().map(u=>`<button class="item" data-act="pick-name" data-id="${u.id}"><span class="body"><b>${esc(u.name)}</b></span><span class="arr">›</span></button>`).join("")}</div>
+    <button class="btn ghost" data-act="pin-cancel" style="width:100%;margin-top:14px">Cancel</button>
+  </div>`;
+}
+function signInAs(u){
+  SESSION=u; pinOk=false; pin=""; log("Signed in",{});
+  save(); toast("Welcome, "+firstName(u)); home(); flushHandOff();
+}
 function viewLogin(){
+  const noStaff=!validPin(staffAcc().pin);
   return `<div class="login">
     <div class="brand"><div class="a">Hotel operations</div><div class="b">Ski Valet</div><div class="c">Storage management</div></div>
-    <label class="f"><span>Staff member</span></label>
-    <div class="rolebar">${DB.users.map(u=>{ const dup=DB.users.filter(x=>firstName(x)===firstName(u)).length>1;
-      return `<button data-act="pick-user" data-id="${u.id}" class="${loginUser&&loginUser.id===u.id?"on":""}">${esc(dup?u.name:firstName(u))}</button>`; }).join("")}</div>
     <div class="pins">${[0,1,2,3].map(i=>`<i class="${pin.length>i?"f":""}"></i>`).join("")}</div>
     <div class="keypad">
       ${[1,2,3,4,5,6,7,8,9].map(n=>`<button data-act="pin" data-n="${n}">${n}</button>`).join("")}
@@ -496,40 +566,60 @@ function viewLogin(){
       <button data-act="pin" data-n="0">0</button>
       <button data-act="pin-del">⌫</button>
     </div>
-    <p class="hint" style="text-align:center;margin-top:16px">Select your name, then enter your 4-digit PIN.</p>
+    <p class="hint" style="text-align:center;margin-top:16px">${noStaff
+      ?"The staff PIN is not set yet. An admin has to sign in and set it under Access."
+      :"Enter the staff PIN."}</p>
+    <button class="btn ghost" data-act="admin-login" style="width:100%;margin-top:10px">Admin sign in</button>
   </div>`;
 }
-/* First run on this device: no accounts yet → create the first admin. */
-function viewFirstRun(){
+function viewAdminLogin(){
   return `<div class="login">
-    <div class="brand"><div class="a">First run on this device</div><div class="b">Ski Valet</div><div class="c">Create the admin account</div></div>
-    <label class="f"><span>Your name</span><input class="input" id="frName" autocomplete="off" autocapitalize="words"></label>
-    <label class="f"><span>4-digit PIN</span><input class="input" id="frPin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off"></label>
-    <label class="f"><span>Repeat PIN</span><input class="input" id="frPin2" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off"></label>
-    <button class="btn primary" data-act="first-admin" style="width:100%">Create admin and start</button>
-    <p class="hint" style="text-align:center;margin-top:16px">Data is stored only in this browser. Add valet staff later from the account menu.</p>
+    <div class="brand"><div class="a">Hotel operations</div><div class="b">Ski Valet</div><div class="c">Admin sign in</div></div>
+    <label class="f"><span>Username</span><input class="input" id="alUser" autocomplete="username" autocapitalize="none" spellcheck="false"></label>
+    <label class="f"><span>Password</span><input class="input" id="alPass" type="password" autocomplete="current-password"></label>
+    <button class="btn primary" data-act="admin-signin" style="width:100%">Sign in</button>
+    <button class="btn ghost" data-act="staff-login" style="width:100%;margin-top:10px">Back to staff PIN</button>
   </div>`;
 }
-function createFirstAdmin(){
-  const name=$("#frName").value.trim(), p1=$("#frPin").value.trim(), p2=$("#frPin2").value.trim();
-  if(!name){ toast("Enter your name","err"); return; }
-  if(!/^\d{4}$/.test(p1)){ toast("The PIN must be exactly 4 digits","err"); return; }
-  if(p1!==p2){ toast("The PINs do not match","err"); return; }
-  if(DB.users.length){ render(); return; }            // another tab got there first
-  const u={id:uid(),name,email:"",role:"admin",pin:p1,created_at:now()};
-  DB.users.push(u); SESSION=u;
-  log("Admin account created",{notes:name}); log("Signed in",{});
-  save(); toast("Welcome, "+firstName(u)); home(); flushHandOff();
+async function adminSignIn(){
+  const u=$("#alUser").value, p=$("#alPass").value, a=adminAcc();
+  let ok=false; try{ ok = sameUser(u,a.username) && await checkPassword(a.password_hash,p); }catch(e){ toast(e.message,"err"); return; }
+  if(!ok){ toast("Wrong username or password","err"); $("#alPass").value=""; return; }
+  SESSION=a; adminLogin=false; log("Signed in",{}); save(); toast("Signed in as admin"); home(); flushHandOff();
+}
+/* First run (or old data): create the admin login and the shared staff PIN. */
+function viewFirstRun(){
+  const hasStaff=validPin(staffAcc().pin);
+  return `<div class="login">
+    <div class="brand"><div class="a">First run on this device</div><div class="b">Ski Valet</div><div class="c">Create the admin login</div></div>
+    <label class="f"><span>Admin username</span><input class="input" id="frUser" autocomplete="username" autocapitalize="none" spellcheck="false"></label>
+    <label class="f"><span>Password (min. 8 characters)</span><input class="input" id="frPass" type="password" autocomplete="new-password"></label>
+    <label class="f"><span>Repeat password</span><input class="input" id="frPass2" type="password" autocomplete="new-password"></label>
+    ${hasStaff?"":`<label class="f"><span>Staff PIN (4 digits, shared by all valets)</span><input class="input" id="frStaff" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off"></label>`}
+    <button class="btn primary" data-act="first-admin" style="width:100%">Save and start</button>
+    <p class="hint" style="text-align:center;margin-top:16px">Data is stored only in this browser. The admin login and staff PIN can be changed later from the account menu.</p>
+  </div>`;
+}
+async function createFirstAdmin(){
+  const user=$("#frUser").value.trim(), p1=$("#frPass").value, p2=$("#frPass2").value, sf=$("#frStaff"), ps=sf?sf.value.trim():String(staffAcc().pin);
+  const err=credError(user,p1,p2); if(err){ toast(err,"err"); return; }
+  if(!validPin(ps)){ toast("The staff PIN must be exactly 4 digits","err"); return; }
+  let hash; try{ hash=await hashPassword(p1); }catch(e){ toast(e.message,"err"); return; }
+  if(adminReady()){ render(); return; }                 // another tab got there first
+  const a=adminAcc(); a.username=user; a.password_hash=hash; a.updated_at=now(); staffAcc().pin=ps; SESSION=a;
+  log("Admin login created",{notes:user}); log("Signed in",{});
+  save(); toast("Welcome"); home(); flushHandOff();
 }
 function flushHandOff(){
   if(!pendingHandOff || !SESSION) return;
   const c=pendingHandOff; pendingHandOff=null; receiveCard(c);
 }
 function tryLogin(){
-  if(!loginUser){ toast("Select your name first","err"); pin=""; $("#shell").innerHTML=viewLogin(); return; }
-  if(pin===String(loginUser.pin??"")){
-    SESSION=loginUser; log("Signed in",{});
-    save(); toast("Welcome, "+firstName(SESSION)); pin=""; loginUser=null; home(); flushHandOff();
+  const st=staffAcc();
+  if(validPin(st.pin) && pin===String(st.pin)){
+    pin="";
+    if(!members().length) return signInAs(st);          // no names added yet → generic "Staff"
+    pinOk=true; render();
   } else { toast("Wrong PIN","err"); pin=""; $("#shell").innerHTML=viewLogin(); }
 }
 
@@ -794,6 +884,11 @@ function consumeUrlCard(){
   }catch(e){ return null; }
 }
 function submitCode(){ const v=normCode($("#codeIn")?.value); if(!v){ toast("Enter a card code","err"); return; } handleCard(v); }
+/* Enter submits the admin / first-run forms */
+document.addEventListener("keydown", e=>{
+  if(SESSION || e.key!=="Enter") return;
+  if(e.target.closest && e.target.closest(".login")){ const b=$('.login [data-act="admin-signin"], .login [data-act="first-admin"]'); if(b){ e.preventDefault(); b.click(); } }
+});
 /* keyboard-wedge readers */
 document.addEventListener("keydown", e=>{
   if(!SESSION || current().view!=="scan") return;
@@ -1057,7 +1152,7 @@ function saveEq(storageId,editId){
   }
   save(); closeSheet(); toast("Equipment saved"); render();
 }
-const QUICK=[["skis",2],["boots",2],["poles",2],["helmet",1],["goggles",1],["snowboard",1],["sbboots",1],["other",1]];
+const QUICK=[["skis",1],["boots",1],["poles",1],["helmet",1],["goggles",1],["snowboard",1],["sbboots",1],["other",1]];
 function openCheckinSheet(storageId){
   const s=stor(+storageId); if(!s){ toast("That storage no longer exists","err"); return; }
   draft = {}; QUICK.forEach(([k,d])=>draft[k]=0);
@@ -1478,7 +1573,7 @@ VIEWS.history = (p={}) => {
   body:`<div class="searchbar" style="margin-bottom:10px">🔎<input id="qH" placeholder="Room, storage, card code or action" autocomplete="off"></div>
     <div class="rolebar" id="sBar">
       <button data-u="" class="${staff?"":"on"}">Everyone</button>
-      ${DB.users.map(u=>`<button data-u="${u.id}" class="${staff===u.id?"on":""}">${esc(firstName(u))} · ${count(u.id)}</button>`).join("")}
+      ${DB.users.filter(u=>count(u.id)||(!u.retired&&!u.archived)).map(u=>`<button data-u="${u.id}" class="${staff===u.id?"on":""}">${esc(firstName(u))} · ${count(u.id)}</button>`).join("")}
     </div>
     <div class="hist" id="hList" style="margin-top:14px"></div>`,
   after(){
@@ -1500,33 +1595,68 @@ VIEWS.history = (p={}) => {
 };
 
 VIEWS.users = () => {
-  if(SESSION.role!=="admin") return {title:"Staff", body:`<div class="empty">Admins only.</div>`};
+  if(SESSION.role!=="admin") return {title:"Access", body:`<div class="empty">Admins only.</div>`};
   const acts = id => DB.history.filter(h=>h.user_id===id).length;
-  return {title:"Staff accounts", sub:DB.users.length+" users",
-  body:`<div class="list">${DB.users.map(u=>`<button class="item" data-act="staff-log" data-id="${u.id}">
-      <span class="body"><b>${esc(u.name)}</b><small>${esc(u.email||"—")} · PIN ${esc(u.pin)} · ${acts(u.id)} actions</small></span>
-      <span class="chip ${u.role==="admin"?"solid s-occupied":""}">${u.role==="admin"?"Admin":"Valet staff"}</span><span class="arr">›</span></button>`).join("")}</div>
-    <div class="hint">Tap a name to see everything that person did.</div>
-    <h2 class="sec">Add a staff member</h2>
+  const st=staffAcc(), a=adminAcc();
+  return {title:"Access", sub:"Staff PIN and admin login",
+  body:`<div class="panel" style="margin-bottom:12px">
+      <div class="eyebrow">Staff PIN</div>
+      <p class="muted tiny" style="margin:6px 0 14px">Shared by every valet · current PIN <b class="mono">${validPin(st.pin)?esc(st.pin):"not set"}</b> ·
+        <span data-act="staff-log" data-id="${st.id}" style="text-decoration:underline;cursor:pointer">${acts(st.id)} actions</span></p>
+      <label class="f"><span>New 4-digit PIN</span><input class="input" id="pin_staff" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off"></label>
+      <button class="btn primary" data-act="set-pin">Change staff PIN</button>
+    </div>
     <div class="panel">
-      <label class="f"><span>Name</span><input class="input" id="uName" placeholder="Full name"></label>
-      <label class="f"><span>Email</span><input class="input" id="uMail" placeholder="Optional" inputmode="email"></label>
-      <label class="f"><span>4-digit PIN</span><input class="input" id="uPin" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off"></label>
-      <label class="f"><span>Role</span><select class="input" id="uRole"><option value="staff">Ski Valet staff</option><option value="admin">Admin</option></select></label>
-      <button class="btn primary" data-act="add-user">Add staff member</button>
-    </div>`};
+      <div class="eyebrow">Admin login</div>
+      <p class="muted tiny" style="margin:6px 0 14px">Username <b class="mono">${esc(a.username)}</b> ·
+        <span data-act="staff-log" data-id="${a.id}" style="text-decoration:underline;cursor:pointer">${acts(a.id)} actions</span></p>
+      <label class="f"><span>Current password</span><input class="input" id="acCur" type="password" autocomplete="current-password"></label>
+      <label class="f"><span>Username</span><input class="input" id="acUser" value="${esc(a.username)}" autocapitalize="none" spellcheck="false" autocomplete="username"></label>
+      <label class="f"><span>New password (min. 8)</span><input class="input" id="acPass" type="password" autocomplete="new-password"></label>
+      <label class="f"><span>Repeat new password</span><input class="input" id="acPass2" type="password" autocomplete="new-password"></label>
+      <button class="btn primary" data-act="set-admin">Save admin login</button>
+    </div>
+    <h2 class="sec">Staff members · ${members().length}</h2>
+    <div class="list">${members().map(u=>`<div class="item"><span class="body"><b>${esc(u.name)}</b><small>${acts(u.id)} actions</small></span>
+      <button class="btn sm ghost" data-act="staff-log" data-id="${u.id}">History</button>
+      <button class="btn sm danger" data-act="rm-member" data-id="${u.id}">Remove</button></div>`).join("")
+      ||`<div class="empty">No names yet. Everyone signs in as “Staff”.</div>`}</div>
+    <div class="panel" style="margin-top:12px">
+      <label class="f"><span>Add staff member</span><input class="input" id="mName" placeholder="Full name" autocapitalize="words"></label>
+      <button class="btn primary" data-act="add-member">Add</button>
+    </div>
+    <div class="hint">Everyone uses the same staff PIN, then taps their name. Removed members keep their history.</div>`};
 };
-function addUser(){
-  const name=$("#uName").value.trim(), mail=$("#uMail").value.trim(), pin=$("#uPin").value.trim(), role=$("#uRole").value;
+function setPin(){
   if(SESSION.role!=="admin"){ toast("Admins only","err"); return; }
-  if(!name||!/^\d{4}$/.test(pin)){ toast("Name and a 4-digit PIN are required","err"); return; }
-  DB.users.push({id:uid(),name,email:mail,role,pin,created_at:now()});
-  log("Staff member added",{notes:name+" · "+role}); save(); toast("Staff member added"); render();
+  const v=$("#pin_staff").value.trim(), st=staffAcc();
+  if(!validPin(v)){ toast("The PIN must be exactly 4 digits","err"); return; }
+  st.pin=v; st.updated_at=now(); log("Staff PIN changed",{}); save(); toast("Staff PIN updated"); render();
+}
+function addMember(){
+  if(SESSION.role!=="admin"){ toast("Admins only","err"); return; }
+  const name=$("#mName").value.trim();
+  if(!name){ toast("Enter a name","err"); return; }
+  if(nameTaken(name)){ toast("That name already exists","err"); return; }
+  DB.users.push({id:uid(),name,email:"",role:"staff",created_at:now()});
+  log("Staff member added",{notes:name}); save(); toast(name+" added"); render();
+}
+function removeMember(id){
+  const u=user(id); if(!u||u.shared||SESSION.role!=="admin") return;
+  u.archived=true; u.updated_at=now(); log("Staff member removed",{notes:u.name}); save(); toast(u.name+" removed","info"); render();
+}
+async function setAdminLogin(){
+  if(SESSION.role!=="admin"){ toast("Admins only","err"); return; }
+  const a=adminAcc(), cur=$("#acCur").value, user=$("#acUser").value.trim(), p1=$("#acPass").value, p2=$("#acPass2").value;
+  try{ if(!await checkPassword(a.password_hash,cur)){ toast("Current password is wrong","err"); return; } }catch(e){ toast(e.message,"err"); return; }
+  const err=credError(user,p1,p2); if(err){ toast(err,"err"); return; }
+  a.username=user; a.password_hash=await hashPassword(p1); a.updated_at=now();
+  log("Admin login changed",{notes:user}); save(); toast("Admin login updated"); render();
 }
 function openAccount(){
   openSheet(`<h3>${esc(SESSION.name)}</h3><p class="sub">${SESSION.role==="admin"?"Admin":"Ski Valet staff"}${SESSION.email?" · "+esc(SESSION.email):""}</p>
     <div class="list">
-      ${SESSION.role==="admin"?`<button class="item" data-act="nav-sheet" data-view="users"><span class="body"><b>Staff accounts</b><small>Add or review users</small></span><span class="arr">›</span></button>`:""}
+      ${SESSION.role==="admin"?`<button class="item" data-act="nav-sheet" data-view="users"><span class="body"><b>Access &amp; staff</b><small>Staff PIN, names, admin login</small></span><span class="arr">›</span></button>`:""}
       <button class="item" data-act="nav-sheet" data-view="history"><span class="body"><b>Activity history</b><small>Full audit trail</small></span><span class="arr">›</span></button>
       ${SESSION.role==="admin"?`<a class="item" href="admin.html" style="text-decoration:none;color:inherit"><span class="body"><b>Admin console</b><small>Fix records, trace equipment, backups</small></span><span class="arr">›</span></a>`:""}
       ${SESSION.role==="admin"?`<button class="item" data-act="nav-sheet" data-view="setup"><span class="body"><b>Hall setup</b><small>Storage locations, reset</small></span><span class="arr">›</span></button>`:""}
@@ -1552,7 +1682,11 @@ document.addEventListener("click", e=>{
   switch(a){
     /* login */
     case "first-admin": createFirstAdmin(); break;
-    case "pick-user": loginUser=user(+el.dataset.id); pin=""; $("#shell").innerHTML=viewLogin(); break;
+    case "admin-login": adminLogin=true; pin=""; render(); setTimeout(()=>$("#alUser")?.focus(),50); break;
+    case "staff-login": adminLogin=false; render(); break;
+    case "admin-signin": adminSignIn(); break;
+    case "pick-name": { const u=user(id); if(u&&!u.archived) signInAs(u); else render(); break; }
+    case "pin-cancel": pinOk=false; pin=""; render(); break;
     case "pin": if(pin.length<4){ pin+=el.dataset.n; $("#shell").innerHTML=viewLogin(); if(pin.length===4) setTimeout(tryLogin,120);} break;
     case "pin-del": pin=pin.slice(0,-1); $("#shell").innerHTML=viewLogin(); break;
     case "pin-clear": pin=""; $("#shell").innerHTML=viewLogin(); break;
@@ -1562,7 +1696,7 @@ document.addEventListener("click", e=>{
     case "nav": go(el.dataset.view, id?{id}:{}); break;
     case "nav-sheet": closeSheet(); go(el.dataset.view,{}); break;
     case "account": openAccount(); break;
-    case "signout": closeSheet(); SESSION=null; loginUser=null; pin=""; nav=[]; render(); break;
+    case "signout": closeSheet(); SESSION=null; pin=""; adminLogin=false; pinOk=false; nav=[]; render(); break;
     case "make-range": makeRange(); break;
     case "drop-area": dropArea(el.dataset.sec); break;
     case "do-drop-area": { const sec=el.dataset.sec;
@@ -1572,7 +1706,7 @@ document.addEventListener("click", e=>{
       <p class="sub">Every room, key card, storage location and item is removed. Staff accounts stay.</p>
       <div class="btn-grid"><button class="btn" data-act="close-sheet">Cancel</button>
         <button class="btn danger" data-act="do-wipe">Erase everything</button></div>`); break;
-    case "do-wipe": { if(SESSION.role!=="admin") break; DB=emptyDB(DB.users); save(); closeSheet(); toast("Hall is empty now","info"); home(); break; }
+    case "do-wipe": { if(SESSION.role!=="admin") break; DB=normaliseDB(emptyDB(DB.users)); save(); closeSheet(); toast("Hall is empty now","info"); home(); break; }
     /* scan */
     case "scan": go("scan",{ctx:el.dataset.ctx||"identify",room_id:el.dataset.room?+el.dataset.room:null,storage_id:el.dataset.storage?+el.dataset.storage:null}); break;
     case "nfc-start": startNFC(); break;
@@ -1630,7 +1764,10 @@ document.addEventListener("click", e=>{
       Object.assign(c,{room_id:null,storage_id:null,status:"released",released_at:now(),updated_at:now()});
       save(); closeSheet(); toast("Key card removed"); render(); break; }
     case "staff-log": go("history",{staff:id}); break;
-    case "add-user": addUser(); break;
+    case "set-pin": setPin(); break;
+    case "set-admin": setAdminLogin(); break;
+    case "add-member": addMember(); break;
+    case "rm-member": removeMember(id); break;
     case "close-sheet": closeSheet(); break;
   }
 });
@@ -1656,11 +1793,10 @@ document.addEventListener("click",e=>{
 /* The admin console (admin.html) edits the same record — pick up its saves. */
 window.addEventListener("storage", e=>{
   if(e.key!==KEY) return;
-  if(e.newValue===null){ DB=emptyDB([]); }                     // storage cleared elsewhere
+  if(e.newValue===null){ DB=normaliseDB(emptyDB([])); }                     // storage cleared elsewhere
   else { try{ DB = normaliseDB(JSON.parse(e.newValue)); }catch(_){ return; } }
   bumpUid();
-  if(loginUser) loginUser = user(loginUser.id) || null;
-  if(SESSION){ SESSION = user(SESSION.id) || null; if(!SESSION){ nav=[{view:"dash",params:{}}]; staleView=false; closeSheet(); toast("Your account was changed in the admin console","info"); render(); return; } }
+  if(SESSION){ const u=user(SESSION.id); SESSION = u && !u.retired && !u.archived ? u : null; if(!SESSION){ nav=[{view:"dash",params:{}}]; staleView=false; closeSheet(); toast("Your account was changed in the admin console","info"); render(); return; } }
   const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
   if(!$("#modal").classList.contains("hidden") || (SESSION && typing)){ staleView=true; return; }  // don't wipe what the user is doing
   render();
@@ -1670,8 +1806,8 @@ document.addEventListener("focusout",()=>{ setTimeout(()=>{
 },0); });
 (async function boot(){
   const loaded = await Persist.load();
-  DB = loaded ? normaliseDB(loaded) : emptyDB([]);
-  if(!loaded) save();
+  DB = normaliseDB(loaded || emptyDB([]));
+  save();                                   // persists the shared-PIN migration
   bumpUid();
   nav=[{view:"dash",params:{}}];
   const handed = consumeUrlCard();
