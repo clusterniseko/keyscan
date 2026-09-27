@@ -57,6 +57,20 @@ WRITE_LOCK = 734001                                               # pg advisory 
 LEGACY_ADMIN_HASH = ("pbkdf2:sha256:260000$IrBfOswUM7KwcPJZ$"
                      "20a131a6402fb718d4188a339933595ad0c17330e4b56f66961a904840cfb047")
 
+# Default hall layout (the storage map). Created automatically on the first
+# start while there are no storages, and restorable from Hall setup / Storage map.
+HALL_LAYOUT = [
+    ("Area A · Main Hall", "S-", 101, 112),
+    ("Area B · Ski Wall", "S-", 120, 131),
+    ("Area C · Boot Room", "S-", 201, 208),
+]
+
+
+def layout_rows():
+    return [{"storage_number": f"{pfx}{n}", "section": area}
+            for area, pfx, a, b in HALL_LAYOUT for n in range(a, b + 1)]
+
+
 # --------------------------------------------------------------------------
 # Data model — one entry per column the apps use. Unknown fields a client
 # sends are kept in the row's `extra` jsonb, so nothing is lost.
@@ -295,8 +309,34 @@ def init_db():
             cur.execute("""INSERT INTO users (id, name, email, role, shared, created_at, updated_at, pin_hash)
                            VALUES (%s, 'Staff', '', 'staff', 'staff', %s, %s, %s)""",
                         (new_id() + 1, now, now, generate_password_hash(pin) if re.fullmatch(r"\d{4}", pin) else None))
+        if meta_get(cur, "layout_seeded") is None:
+            cur.execute("SELECT count(*) AS n FROM storages")
+            if cur.fetchone()["n"] == 0:
+                create_layout(cur)
+            cur.execute("INSERT INTO meta (key, value) VALUES ('layout_seeded', '1') ON CONFLICT DO NOTHING")
         cur.execute("SELECT value FROM meta WHERE key = 'secret_key'")
         return cur.fetchone()["value"]
+
+
+def norm_code(v):
+    return re.sub(r"[^A-Z0-9]", "", str(v or "").upper())
+
+
+def create_layout(cur):
+    """Adds every default location that does not exist yet (empty, available). Returns how many."""
+    cur.execute("SELECT storage_number FROM storages")
+    have = {norm_code(r["storage_number"]) for r in cur.fetchall()}
+    now = dt.datetime.now(dt.timezone.utc)
+    rows, base = [], new_id()
+    for i, r in enumerate(layout_rows()):
+        if norm_code(r["storage_number"]) in have:
+            continue
+        vals = {c: None for c, _ in SCHEMA["storages"]}
+        vals.update(storage_number=r["storage_number"], section=r["section"], status="available",
+                    created_at=now, updated_at=now)
+        rows.append((base + i, vals, {}))
+    insert_rows(cur, "storages", rows, "insert")
+    return len(rows)
 
 
 def meta_get(cur, key):
@@ -352,7 +392,10 @@ def pull(cur, since, client_epoch, admin):
                 deleted.setdefault(r["tbl"], []).append(r["id"])
     parts = ", ".join(f"(SELECT COALESCE(max(rev), 0) FROM {t})" for t in TABLES + ["tombstones"])
     cur.execute(f"SELECT GREATEST({parts}) AS rev")
-    return {"epoch": epoch, "rev": cur.fetchone()["rev"], "full": full, "changes": changes, "deleted": deleted}
+    out = {"epoch": epoch, "rev": cur.fetchone()["rev"], "full": full, "changes": changes, "deleted": deleted}
+    if full:
+        out["layout"] = layout_rows()
+    return out
 
 
 def dump(cur, tables, admin=False):
@@ -788,6 +831,16 @@ def replace(cur, u):
     replace_all(cur, data, bool(b.get("keep_history")), u, str(b.get("label") or "Data replaced"),
                 str(b.get("notes") or ""))
     return jsonify(ok=True)
+
+
+@app.post("/api/admin/load-layout")
+@auth(admin=True)
+def load_layout(cur, u):
+    write_lock(cur)
+    made = create_layout(cur)
+    if made:
+        log_server(cur, u["id"], "Default layout loaded", f"{made} locations created")
+    return jsonify(created=made)
 
 
 @app.post("/api/admin/clear-history")

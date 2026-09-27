@@ -32,7 +32,10 @@ Si no defines `SECRET_KEY`, se genera una y se guarda en la base de datos.
 
 1. Abre `/` → **Admin sign in**.
 2. Cuenta → **Access & staff**: pon el PIN del personal y añade los nombres.
-3. Cuenta → **Hall setup**: crea las ubicaciones.
+3. El mapa de ubicaciones ya viene creado (vacío): Main Hall S-101–112, Ski Wall S-120–131,
+   Boot Room S-201–208. Si borras alguna, **Hall setup** (app) o **Storage map** (/admin) muestran
+   el botón *Restore default layout* para volver a crear las que falten. El mapa se define en
+   `HALL_LAYOUT`, al principio de `app.py`.
 4. Los valets entran con el PIN y tocan su nombre.
 
 La consola de administración está en `/admin` (misma sesión que la app).
