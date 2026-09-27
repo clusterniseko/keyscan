@@ -37,6 +37,7 @@ const SkiSync = (() => {
   const COLS = ["rooms","storages","cards","equipment","users","history"];
   const POLL_MS = 5000;
   let S = fresh();
+  let LAYOUT = [];                         // default hall layout, sent by the server on a full load
   function fresh(){
     const o = {epoch:null, rev:0, synced:{}, revs:{}, hist:new Set(), inflight:null, dirty:false,
       snap:null, timer:null, retry:0, retryTimer:null, running:false};
@@ -88,6 +89,7 @@ const SkiSync = (() => {
     });
     db.history.sort(histSort);
     S.epoch = res.epoch; S.rev = res.rev;
+    if(Array.isArray(res.layout)) LAYOUT = res.layout;
     opts.set(db);
   }
 
@@ -249,6 +251,20 @@ const SkiSync = (() => {
     /* save(): push local changes. snapshotLabel (admin): server snapshots the state before them */
     save(snapshotLabel){ if(snapshotLabel && !S.snap) S.snap = snapshotLabel; S.dirty = true; return flush(); },
     reload,
+    refresh(){ return poll(); },
+    /* default locations that are not in the hall yet */
+    missingLayout(db){
+      const norm = v => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const have = new Set(((db && db.storages) || []).map(s => norm(s.storage_number)));
+      return LAYOUT.filter(r => !have.has(norm(r.storage_number)));
+    },
+    /* admin: create the missing default locations on the server */
+    async loadLayout(){
+      if(S.dirty || S.inflight) await flush();
+      const r = await API("/api/admin/load-layout", {});
+      await poll();
+      return r.created;
+    },
     pending(){ return S.dirty || !!S.inflight; },
     _authLost(){ const f = this._opts.onAuthLost; this.stop(); if(f) f(); }
   };

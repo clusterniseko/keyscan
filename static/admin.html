@@ -711,6 +711,7 @@ V.map = () => {
     <div class="toolbar">
       <button class="btn primary" data-act="map-range">+ Add range</button>
       <button class="btn" data-act="map-new">+ New storage</button>
+      ${SkiSync.missingLayout(DB).length?`<button class="btn" data-act="load-layout" title="Main Hall S-101–112 · Ski Wall S-120–131 · Boot Room S-201–208">Restore default layout (${SkiSync.missingLayout(DB).length} missing)</button>`:""}
     </div>
     <div class="legend">${Object.entries(STATUS).map(([k,l])=>`<span><i style="background:${STC(k)}"></i>${esc(l)}</span>`).join("")}</div>
     ${areas.length?areas.map(a=>{ const rows=sorted(a), free=rows.filter(s=>!busy(s)).length;
@@ -1108,6 +1109,9 @@ document.addEventListener("click",e=>{
     case "map-del": closeSheet(); askDelete("storages",id); break;
     case "map-new": mapNew(el.dataset.area); break;
     case "map-range": mapRange(); break;
+    case "load-layout": el.disabled=true;
+      SkiSync.loadLayout().then(n=>{ toast(n?n+" locations created":"Nothing missing", n?"":"info"); render(); })
+        .catch(e=>{ toast(e.message,"err"); el.disabled=false; }); break;
     case "map-range-go": mapRangeGo(); break;
     case "map-rename": mapRename(el.dataset.area); break;
     case "map-rename-go": mapRenameGo(el.dataset.area); break;

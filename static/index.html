@@ -1446,6 +1446,12 @@ VIEWS.setup = () => {
       <div class="hint">Numbers already in use are skipped. To add a single one, put the same number in both fields.</div>
     </div>
 
+    ${admin && SkiSync.missingLayout(DB).length?`<div class="panel" style="margin-top:12px">
+      <div class="eyebrow">Default storage map</div>
+      <p class="muted tiny" style="margin:6px 0 14px">${SkiSync.missingLayout(DB).length} standard locations are missing (Main Hall S-101–112, Ski Wall S-120–131, Boot Room S-201–208). They are created empty and available.</p>
+      <button class="btn" data-act="load-layout">Restore default layout</button>
+    </div>`:""}
+
     <h2 class="sec">Areas ${sections.length?`· ${sections.length}`:""}</h2>
     ${sections.length? sections.map(sec=>{
       const rows=DB.storages.filter(s=>(s.section||"Unassigned area")===sec), busy=rows.filter(s=>s.status!=="available").length;
@@ -1647,6 +1653,9 @@ document.addEventListener("click", e=>{
     case "account": openAccount(); break;
     case "signout": signOut(); break;
     case "make-range": makeRange(); break;
+    case "load-layout": { if(SESSION.role!=="admin") break; el.disabled=true;
+      SkiSync.loadLayout().then(n=>{ toast(n?n+" locations created":"Nothing missing", n?"":"info"); render(); })
+        .catch(e=>{ toast(e.message,"err"); el.disabled=false; }); break; }
     case "drop-area": dropArea(el.dataset.sec); break;
     case "do-drop-area": { const sec=el.dataset.sec;
       DB.storages=DB.storages.filter(s=>!((s.section||"Unassigned area")===sec&&s.status==="available"&&s.room_id==null&&!eqCount(s.id)&&!cardsOfStorage(s.id).length));
