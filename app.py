@@ -48,6 +48,7 @@ if not DATABASE_URL:
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1") != "0"      # set 0 only for local http
 SESSION_HOURS = int(os.environ.get("SESSION_HOURS", "12"))
 HISTORY_LIMIT = int(os.environ.get("HISTORY_LIMIT", "5000"))      # history rows sent on a full load
+ANALYTICS_MAX_ROWS = int(os.environ.get("ANALYTICS_MAX_ROWS", "200000"))   # safety cap for /api/admin/analytics
 MAX_SNAPSHOTS = 15
 LOGIN_MAX_FAILS = 10                                              # per IP, per 10 minutes
 WRITE_LOCK = 734001                                               # pg advisory lock key
@@ -880,6 +881,39 @@ def snapshot_restore(cur, u, sid):
         raise ApiError(404, "Snapshot not found")
     replace_all(cur, r["data"], True, u, "Snapshot restored", r["label"])
     return jsonify(ok=True)
+
+
+# ---------------- analytics ----------------
+# Actions whose notes the Analytics page parses (item manifests). Notes of other
+# actions are left out of the response to keep it small.
+ANALYTICS_NOTE_ACTIONS = ["Equipment checked in", "Equipment added", "Checked out & released"]
+
+
+@app.get("/api/admin/analytics")
+@auth(admin=True, repeatable=True)
+def analytics(cur, u):
+    """History rows for the admin Analytics page, for any time window.
+
+    A normal sync only sends the latest HISTORY_LIMIT rows, so long ranges
+    ("Season") read straight from the table here. Rows are compact arrays:
+    [id, timestamp_ms, user_id, action, storage_id, notes]. The client does
+    the counting, so the numbers match the live view exactly.
+    """
+    start = to_ts(request.args.get("from")) or to_ts(0)
+    end = to_ts(request.args.get("to")) or dt.datetime.now(dt.timezone.utc)
+    cur.execute("""SELECT id, (extract(epoch FROM "timestamp") * 1000)::bigint AS ts, user_id, action, storage_id,
+                          CASE WHEN action = ANY(%s) THEN notes END AS notes
+                     FROM history
+                    WHERE "timestamp" >= %s AND "timestamp" <= %s
+                    ORDER BY "timestamp" DESC, id DESC
+                    LIMIT %s""", (ANALYTICS_NOTE_ACTIONS, start, end, ANALYTICS_MAX_ROWS + 1))
+    rows = cur.fetchall()
+    truncated = len(rows) > ANALYTICS_MAX_ROWS
+    cur.execute('SELECT (extract(epoch FROM min("timestamp")) * 1000)::bigint AS oldest, count(*) AS total FROM history')
+    m = cur.fetchone()
+    return jsonify(rows=[[r["id"], r["ts"], r["user_id"], r["action"], r["storage_id"], r["notes"]]
+                         for r in rows[:ANALYTICS_MAX_ROWS]],
+                   oldest=m["oldest"], total=m["total"], truncated=truncated)
 
 
 if __name__ == "__main__":
