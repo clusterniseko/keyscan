@@ -194,6 +194,32 @@ nav.side button.on{background:linear-gradient(90deg,rgba(255,106,43,.16),rgba(26
 .tbl-wrap{box-shadow:0 10px 24px rgba(2,10,17,.13)}th{background:#1a3042}tr.clk:hover td,tr:hover td{background:rgba(94,200,242,.055)}
 .sheet{box-shadow:0 18px 48px rgba(0,0,0,.42);border-color:rgba(112,151,178,.42)}.modal{background:rgba(3,10,16,.78);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
 @media(min-width:1100px){.layout{padding:12px}.topbar{margin:10px 12px 0;border:1px solid rgba(112,151,178,.3);border-radius:16px}.layout{max-width:1424px}main{padding:26px 28px 72px}nav.side{top:77px;height:calc(100vh - 89px);border-radius:16px;background:rgba(19,35,51,.5)}}
+/* ---------- analytics ---------- */
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-s);overflow:hidden;background:rgba(5,15,24,.4)}
+.seg button{padding:7px 14px;font-family:var(--display);letter-spacing:1px;text-transform:uppercase;font-size:14px;color:var(--mist)}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button.on{background:var(--signal);color:#160B04;font-weight:700}
+.stat .dl{display:block;margin-top:6px;font-size:12px;letter-spacing:.3px;text-transform:none;color:var(--dim)}
+.stat .dl.up{color:var(--st-ready)} .stat .dl.dn{color:#FF8080}
+.an-chart{overflow-x:auto;padding-bottom:4px}
+.an-chart svg{display:block}
+.an-chart text{fill:var(--dim);font-size:11px;font-family:var(--body)}
+.an-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mist);margin:0 0 10px}
+.an-legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.heat{display:grid;grid-template-columns:38px repeat(24,minmax(14px,1fr));gap:3px;font-size:10px;color:var(--dim);min-width:520px}
+.heat .hc{height:20px;border-radius:3px;background:var(--glacier)}
+.heat .hl{display:flex;align-items:center;font-family:var(--display);letter-spacing:1px;text-transform:uppercase;font-size:11px}
+.heat .hh{text-align:center}
+.bars .br{display:grid;grid-template-columns:minmax(90px,140px) 1fr 52px;gap:10px;align-items:center;font-size:13px;margin-bottom:7px}
+.bars .tr{height:10px;border-radius:5px;background:rgba(5,15,24,.55);overflow:hidden}
+.bars .tr i{display:block;height:100%;border-radius:5px;background:var(--c,var(--glacier))}
+.bars .n{text-align:right;font-variant-numeric:tabular-nums;color:var(--mist)}
+.insight{display:flex;gap:10px;align-items:baseline;font-size:14px;padding:6px 0;border-bottom:1px solid var(--line)}
+.insight:last-child{border-bottom:0}
+.insight b{font-family:var(--display);font-size:18px;letter-spacing:.5px;color:var(--frost);white-space:nowrap}
+  .stats.an4{grid-template-columns:repeat(4,1fr)}
+@media(max-width:640px){.stats.an4{grid-template-columns:repeat(2,1fr)}}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -380,7 +406,7 @@ function checkIntegrity(){
 const V = {};
 const NAV = [
   ["overview","Overview"],["trace","Trace / find"],["rooms","Rooms"],["storages","Storages"],["map","Storage map"],
-  ["cards","Key cards"],["equipment","Equipment"],["users","Staff & access"],["history","History"],["data","Backup & data"]
+  ["cards","Key cards"],["equipment","Equipment"],["users","Staff & access"],["history","History"],["analytics","Analytics"],["data","Backup & data"]
 ];
 function go(v,p={}){ view=v; params=p; render(); window.scrollTo(0,0); }
 function render(){
@@ -428,7 +454,7 @@ async function doLogin(){
   finally{ busy=false; }
 }
 async function signOut(){
-  closeSheet(); SESSION=null;
+  closeSheet(); SESSION=null; AN={key:null,rows:null,from:0,oldest:null,total:null,truncated:false,err:null,loading:null}; AN_H=null;
   if(SkiSync.pending()){ try{ await SkiSync.save(); }catch(_){} }
   SkiSync.stop(); DB=normalise(null);
   try{ await API("/api/logout",{}); }catch(_){}
@@ -1028,6 +1054,268 @@ V.history = (p) => ({body:`
     $("#hQ").addEventListener("input",draw); $("#hU").addEventListener("change",draw); draw();
   }});
 
+/* ---------- analytics ----------
+   Everything is computed from the audit trail the valet app already writes, plus
+   the current hall state — no extra tracking is needed in index.html.
+   The console's normal sync only holds the latest 5,000 history rows, so the page
+   fetches the full window from /api/admin/analytics and merges in live rows that
+   arrive through SkiSync afterwards. If that call fails it falls back to DB.history. */
+const AN_KIND = {
+  "Equipment checked in":"checkin", "Equipment checked out":"handout",
+  "Equipment returned":"return",     "Checked out & released":"depart",
+  "Key card registered":"arrive",    "Key card reused":"arrive",
+  "Key card scanned":"scan",         "Signed in":"signin",
+  "Storage cleared":"clear"
+};
+const AN_FLOW = [["checkin","Check-ins","var(--glacier)"],["handout","Hand-outs","var(--st-guest)"],
+                 ["return","Returns","var(--st-ready)"],["depart","Departures","var(--signal)"]];
+const AN_OPS = new Set(["checkin","handout","return","depart","arrive","scan"]);   // "movements" at the desk
+const AN_RANGES = [["today","Today"],["7","7 days"],["30","30 days"],["all","Season"]];
+const DAYMS = 864e5, WD = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const anKind = h => AN_KIND[h.action] || null;
+const sod = ts => { const d=new Date(ts); d.setHours(0,0,0,0); return d.getTime(); };
+const pad2 = n => String(n).padStart(2,"0");
+const dKey = ts => { const d=new Date(ts); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; };
+const wdIdx = ts => (new Date(ts).getDay()+6)%7;          // Monday = 0
+const anMean = a => a.length ? a.reduce((x,y)=>x+y,0)/a.length : null;
+const anMedian = a => { if(!a.length) return null; const s=[...a].sort((x,y)=>x-y), i=s.length>>1; return s.length%2?s[i]:(s[i-1]+s[i])/2; };
+/* "Skis ×2, Poles ×1 · 2 cards released" → [["Skis",2],["Poles",1]] */
+function anItems(notes){
+  return String(notes||"").split(" · ")[0].split(",")
+    .map(x=>x.trim().match(/^(.+?)\s*×\s*(\d+)$/)).filter(Boolean).map(m=>[m[1],+m[2]]);
+}
+function fmtDur(ms){
+  if(ms==null||!isFinite(ms)) return "—";
+  const m=Math.round(ms/6e4); if(m<60) return m+" min";
+  if(m<1440) return Math.floor(m/60)+"h "+pad2(m%60)+"m";
+  return (m/1440).toFixed(1)+" days";
+}
+let AN = {key:null, rows:null, from:0, oldest:null, total:null, truncated:false, err:null, loading:null};
+let AN_H = null;                                           // merged history for the current render
+const AN_LOOKBACK = 21*DAYMS;                              // extra days so stays/trips that began earlier still pair up
+const anSrc = () => AN_H || DB.history;
+function anHist(r){
+  if(AN.key!==r || !AN.rows) return DB.history;
+  const ids=new Set(AN.rows.map(h=>h.id));
+  const live=DB.history.filter(h=>h.timestamp>=AN.from && !ids.has(h.id));
+  return live.length ? live.concat(AN.rows) : AN.rows;
+}
+async function anLoad(r){
+  if(AN.loading===r) return;
+  const rg=anRange(r), from = r==="all" ? 0 : Math.min(rg.from, rg.pFrom??rg.from) - AN_LOOKBACK;
+  AN.loading=r;
+  try{
+    const d=await API(`/api/admin/analytics?from=${Math.floor(from)}&to=${now()+6e4}`);
+    AN={key:r, from, oldest:d.oldest, total:d.total, truncated:!!d.truncated, err:null, loading:null,
+        rows:d.rows.map(([id,timestamp,user_id,action,storage_id,notes])=>({id,timestamp,user_id,action,storage_id,notes:notes||""}))};
+  }catch(e){ AN={key:r, rows:null, from:0, oldest:null, total:null, truncated:false, err:e.message, loading:null}; }
+  if(SESSION && view==="analytics" && (params.range||"7")===r) render();
+}
+function anRange(r){
+  const t=now(), today=sod(t);
+  if(r==="today") return {from:today,to:t,pFrom:today-DAYMS,pTo:t-DAYMS,prevLbl:"yesterday",hourly:true};
+  if(r==="all"){ const oldest=AN.key==="all"&&AN.oldest!=null ? AN.oldest : anSrc().reduce((m,h)=>Math.min(m,h.timestamp||t),t);
+    return {from:sod(Math.min(oldest,t)),to:t}; }
+  const n=+r, from=today-(n-1)*DAYMS;
+  return {from,to:t,pFrom:from-n*DAYMS,pTo:from-1,prevLbl:`prev. ${n} days`};
+}
+function anSummary(from,to){
+  const c={checkin:0,handout:0,return:0,depart:0,arrive:0,scan:0,signin:0,items:0,actions:0,ops:0}, staff=new Set();
+  const rows=anSrc().filter(h=>h.timestamp>=from&&h.timestamp<=to);
+  rows.forEach(h=>{
+    const k=anKind(h); if(k&&c[k]!=null) c[k]++;
+    if(AN_OPS.has(k)) c.ops++;
+    if(k==="checkin") c.items+=anItems(h.notes).reduce((a,[,q])=>a+q,0);
+    if(!String(h.action).startsWith("[Admin]")&&h.user_id!=null){ c.actions++; staff.add(h.user_id); }
+  });
+  c.staff=staff.size; c.rows=rows; return c;
+}
+/* Pair events per storage over the whole loaded history (oldest → newest):
+   stay = first check-in → final check-out; out = hand-out → return. */
+function anDurations(){
+  const stay=[], out=[], firstIn={}, lastOut={};
+  [...anSrc()].sort((a,b)=>a.timestamp-b.timestamp).forEach(h=>{
+    const k=anKind(h), s=h.storage_id; if(s==null||!k) return;
+    if(k==="checkin"){ if(firstIn[s]==null) firstIn[s]=h.timestamp; }
+    else if(k==="handout") lastOut[s]=h.timestamp;
+    else if(k==="return"){ if(lastOut[s]!=null) out.push({end:h.timestamp,ms:h.timestamp-lastOut[s]}); lastOut[s]=null; }
+    else if(k==="depart"||k==="clear"){
+      if(k==="depart"&&firstIn[s]!=null) stay.push({end:h.timestamp,ms:h.timestamp-firstIn[s]});
+      firstIn[s]=null; lastOut[s]=null; }
+  });
+  return {stay,out};
+}
+function anBuckets(rg){
+  const list=[];
+  if(rg.hourly){ for(let i=0;i<24;i++) list.push({key:i,label:`${pad2(i)}:00–${pad2(i+1)}:00`,short:pad2(i),vals:{}}); }
+  else for(let d=rg.from; d<=rg.to; d+=DAYMS){ const dt=new Date(d);
+    list.push({key:dKey(d),label:`${WD[wdIdx(d)]} ${dt.getDate()} ${MON[dt.getMonth()]}`,short:`${dt.getDate()} ${MON[dt.getMonth()]}`,vals:{}}); }
+  const idx=Object.fromEntries(list.map((b,i)=>[b.key,i]));
+  return {list,at:h=>list[idx[rg.hourly?new Date(h.timestamp).getHours():dKey(h.timestamp)]]};
+}
+function anBarSVG(list,W){
+  const H=210, pl=34, pb=26, pt=12, n=list.length||1;
+  const tot=b=>AN_FLOW.reduce((a,[k])=>a+(b.vals[k]||0),0);
+  const max=Math.max(4,...list.map(tot)), y=v=>pt+(H-pt-pb)*(1-v/max);
+  const step=(W-pl)/n, bw=Math.max(3,Math.min(34,step*.68)), every=Math.max(1,Math.ceil(n/Math.max(1,Math.floor((W-pl)/52))));
+  let g=[...new Set([0,Math.round(max/2),max])].map(t=>
+    `<line x1="${pl}" x2="${W}" y1="${y(t)}" y2="${y(t)}" style="stroke:var(--line)" ${t?'stroke-dasharray="2 4"':""}/><text x="${pl-7}" y="${y(t)+4}" text-anchor="end">${t}</text>`).join("");
+  list.forEach((b,i)=>{
+    const x=pl+i*step+(step-bw)/2; let acc=0;
+    const tip=`${b.label} — `+AN_FLOW.map(([k,l])=>`${l}: ${b.vals[k]||0}`).join(", ");
+    AN_FLOW.forEach(([k,,c])=>{ const v=b.vals[k]||0; if(!v) return;
+      g+=`<rect x="${x}" y="${y(acc+v)}" width="${bw}" height="${Math.max(1,y(acc)-y(acc+v)-1)}" rx="2" style="fill:${c}"/>`; acc+=v; });
+    g+=`<rect x="${pl+i*step}" y="${pt}" width="${step}" height="${H-pt-pb}" fill="transparent"><title>${esc(tip)}</title></rect>`;
+    if(i%every===0) g+=`<text x="${x+bw/2}" y="${H-8}" text-anchor="middle">${esc(b.short)}</text>`;
+  });
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Activity chart">${g}</svg>`;
+}
+function anBars(entries,color){
+  const max=Math.max(1,...entries.map(e=>e[1]));
+  return `<div class="bars">${entries.map(([l,v,sub])=>`<div class="br"><span>${esc(l)}</span>
+    <span class="tr"><i style="width:${(v/max*100).toFixed(1)}%;--c:${color}"></i></span><span class="n">${sub??v}</span></div>`).join("")}</div>`;
+}
+function anCSV(){
+  AN_H=anHist(params.range||"7");
+  const rg=anRange(params.range||"7"), out=[["date","check_ins","items_checked_in","hand_outs","returns","departures","cards_registered","card_scans","sign_ins","active_staff","staff_actions"]];
+  for(let d=sod(rg.from); d<=rg.to; d+=DAYMS){ const c=anSummary(d,d+DAYMS-1);
+    out.push([dKey(d),c.checkin,c.items,c.handout,c.return,c.depart,c.arrive,c.scan,c.signin,c.staff,c.actions]); }
+  download(`skivalet-analytics-${stamp()}.csv`,out.map(r=>r.join(",")).join("\n"),"text/csv");
+}
+
+V.analytics = (p) => {
+  const r=p.range||"7"; AN_H=anHist(r);
+  const fresh=AN.key===r&&AN.rows, failed=AN.key===r&&AN.err;
+  const rg=anRange(r), cur=anSummary(rg.from,rg.to), prev=rg.pFrom!=null?anSummary(rg.pFrom,rg.pTo):null;
+  const delta=k=>{ if(!prev) return ""; const a=cur[k], b=prev[k];
+    if(!b) return `<span class="dl ${a?"up":""}">${a?"▲ new":"—"} vs ${rg.prevLbl}</span>`;
+    const d=Math.round((a-b)/b*100);
+    return `<span class="dl ${d>0?"up":d<0?"dn":""}">${d>0?"▲":d<0?"▼":"="} ${Math.abs(d)}% vs ${rg.prevLbl}</span>`; };
+  const T=(k,n,l,c)=>`<div class="stat" style="--c:${c}"><b>${n}</b><span>${l}</span>${k?delta(k):""}</div>`;
+
+  /* durations that finished inside the range */
+  const D=anDurations(), inR=x=>x.end>=rg.from&&x.end<=rg.to;
+  const stays=D.stay.filter(inR).map(x=>x.ms), outs=D.out.filter(inR).map(x=>x.ms);
+
+  /* heatmap weekday × hour, staff, equipment mix */
+  const heat=Array.from({length:7},()=>Array(24).fill(0)), staff={}, mix={};
+  cur.rows.forEach(h=>{
+    const k=anKind(h), adm=String(h.action).startsWith("[Admin]");
+    if(AN_OPS.has(k)){ const d=new Date(h.timestamp); heat[wdIdx(h.timestamp)][d.getHours()]++; }
+    if(!adm&&h.user_id!=null){ const s=staff[h.user_id]||(staff[h.user_id]={id:h.user_id,total:0,last:0});
+      s.total++; if(k) s[k]=(s[k]||0)+1; s.last=Math.max(s.last,h.timestamp); }
+    if(h.action==="Equipment checked in"||h.action==="Equipment added") anItems(h.notes).forEach(([l,q])=>mix[l]=(mix[l]||0)+q);
+  });
+  const hmax=Math.max(1,...heat.flat());
+  const hourTot=Array(24).fill(0); heat.forEach(row=>row.forEach((v,i)=>hourTot[i]+=v));
+  const peakH=hourTot.indexOf(Math.max(...hourTot));
+  const byDay={}; cur.rows.forEach(h=>{ if(AN_OPS.has(anKind(h))) byDay[dKey(h.timestamp)]=(byDay[dKey(h.timestamp)]||0)+1; });
+  const busiest=Object.entries(byDay).sort((a,b)=>b[1]-a[1])[0];
+  const staffRows=Object.values(staff).sort((a,b)=>b.total-a.total);
+
+  /* live state */
+  const inUse=DB.storages.filter(s=>s.status!=="available"&&s.status!=="closed"), open=DB.storages.filter(s=>s.status!=="closed");
+  const areas=[...new Set(DB.storages.map(areaOf))].sort().map(a=>{ const all=DB.storages.filter(s=>areaOf(s)===a&&s.status!=="closed"), u=all.filter(s=>s.status!=="available");
+    return [a,u.length,`${u.length}/${all.length}`]; });
+  const util=open.length?Math.round(inUse.length/open.length*100):0;
+
+  const oldest=fresh&&AN.oldest!=null ? AN.oldest : DB.history.reduce((m,h)=>Math.min(m,h.timestamp||Infinity),Infinity);
+  const src = fresh
+    ? `${AN.total} records in the database${isFinite(oldest)?`, oldest ${fmtDT(oldest)}`:""}.
+       ${AN.truncated?`<span style="color:var(--st-preparing)">This period is very large, so only the newest rows were loaded.</span>`:""}`
+    : failed
+    ? `<span style="color:var(--st-preparing)">Couldn't load the full history from the server (${esc(AN.err)}) — showing the latest ${DB.history.length} records held by this console.</span>`
+    : `<span class="dim">Loading full history from the database…</span>`;
+  const ins=(v,l)=>`<div class="insight"><b>${v}</b><span class="muted">${l}</span></div>`;
+  const dayLbl=k=>{ const [y,m,d]=k.split("-").map(Number), dt=new Date(y,m-1,d); return `${WD[wdIdx(dt)]} ${d} ${MON[m-1]}`; };
+
+  return {body:`
+    <h1>Analytics</h1>
+    <p class="lead">How the valet desk is being used — built from the activity history the app already records.
+      ${src}</p>
+    <div class="toolbar">
+      <div class="seg">${AN_RANGES.map(([k,l])=>`<button class="${k===r?"on":""}" data-act="an-range" data-r="${k}">${l}</button>`).join("")}</div>
+      <span class="grow"></span>
+      <button class="btn ghost" data-act="an-csv">Daily CSV</button>
+    </div>
+
+    <div class="stats an4">
+      ${T("checkin",cur.checkin,"Check-ins","var(--glacier)")}
+      ${T("items",cur.items,"Items checked in","var(--st-occupied)")}
+      ${T("handout",cur.handout,"Hand-outs","var(--st-guest)")}
+      ${T("return",cur.return,"Returns","var(--st-ready)")}
+      ${T("depart",cur.depart,"Departures","var(--signal)")}
+      ${T("arrive",cur.arrive,"Cards registered","var(--mist)")}
+      ${T("scan",cur.scan,"Card scans","var(--dim)")}
+      ${T("staff",cur.staff,"Active staff","var(--st-preparing)")}
+    </div>
+
+    <h2 class="sec">Desk activity · ${rg.hourly?"by hour":"by day"}</h2>
+    <div class="panel">
+      <div class="an-legend">${AN_FLOW.map(([,l,c])=>`<span><i style="background:${c}"></i>${l}</span>`).join("")}</div>
+      <div class="an-chart" id="anChart"></div>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <h2 class="sec">Key numbers</h2>
+        <div class="panel">
+          ${ins(busiest?dayLbl(busiest[0]):"—",busiest?`busiest day · ${busiest[1]} movements`:"busiest day")}
+          ${ins(cur.ops?`${pad2(peakH)}:00–${pad2(peakH+1)}:00`:"—",cur.ops?`peak hour · ${Math.round(hourTot[peakH]/cur.ops*100)}% of movements`:"peak hour")}
+          ${ins(fmtDur(anMedian(stays)),`typical stay, check-in → final check-out${stays.length?` · ${stays.length} stays, avg ${fmtDur(anMean(stays))}`:""}`)}
+          ${ins(fmtDur(anMedian(outs)),`typical time out with guest, hand-out → return${outs.length?` · ${outs.length} trips`:""}`)}
+          ${ins(cur.checkin?(cur.items/cur.checkin).toFixed(1):"—","items per check-in")}
+          ${ins(cur.signin,"staff sign-ins")}
+        </div>
+      </div>
+      <div>
+        <h2 class="sec">Right now · ${util}% in use</h2>
+        <div class="panel">
+          <div class="row" style="margin-bottom:12px;gap:18px">
+            <span class="muted tiny"><b style="color:var(--frost)">${inUse.length}</b> of ${open.length} storages in use</span>
+            <span class="muted tiny"><b style="color:var(--frost)">${DB.storages.filter(s=>s.status==="guest_using").length}</b> with guests</span>
+            <span class="muted tiny"><b style="color:var(--frost)">${DB.equipment.reduce((a,e)=>a+(+e.quantity||0),0)}</b> items stored</span>
+          </div>
+          ${areas.length?anBars(areas,"var(--glacier)"):`<div class="dim">No storage locations yet.</div>`}
+        </div>
+      </div>
+    </div>
+
+    <h2 class="sec">When the desk is busy · weekday × hour</h2>
+    <div class="panel an-chart">
+      <div class="heat">
+        <span></span>${Array.from({length:24},(_,i)=>`<span class="hh">${i%3===0?pad2(i):""}</span>`).join("")}
+        ${heat.map((row,d)=>`<span class="hl">${WD[d]}</span>${row.map((v,h)=>`<span class="hc" title="${WD[d]} ${pad2(h)}:00 · ${v} movement${v===1?"":"s"}"
+          style="${v?`opacity:${(.15+.85*v/hmax).toFixed(2)}`:"background:var(--slab2)"}"></span>`).join("")}`).join("")}
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <h2 class="sec">Staff activity</h2>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Staff</th><th class="num">In</th><th class="num">Out</th><th class="num">Back</th><th class="num">Dep.</th><th class="num">Total</th><th>Last active</th></tr></thead>
+          <tbody>${staffRows.map(s=>{ const n=user(s.id)?.name||"#"+s.id;
+            return `<tr><td><span class="lnk" data-act="go" data-view="history" data-q="${esc(n)}">${esc(n)}</span></td>
+              <td class="num">${s.checkin||0}</td><td class="num">${s.handout||0}</td><td class="num">${s.return||0}</td><td class="num">${s.depart||0}</td>
+              <td class="num"><b>${s.total}</b></td><td class="muted">${ago(s.last)}</td></tr>`; }).join("")
+            ||`<tr><td colspan="7" class="dim">No staff activity in this period.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+      <div>
+        <h2 class="sec">Equipment checked in</h2>
+        <div class="panel">${Object.keys(mix).length?anBars(Object.entries(mix).sort((a,b)=>b[1]-a[1]),"var(--st-occupied)"):`<div class="dim">No equipment checked in during this period.</div>`}</div>
+      </div>
+    </div>`,
+  after(){
+    if(AN.key!==r && AN.loading!==r) anLoad(r);
+    const el=$("#anChart"); if(!el) return;
+    const B=anBuckets(rg);
+    cur.rows.forEach(h=>{ const k=anKind(h), b=B.at(h); if(b&&AN_FLOW.some(([f])=>f===k)) b.vals[k]=(b.vals[k]||0)+1; });
+    el.innerHTML=anBarSVG(B.list,Math.max(el.clientWidth||600,B.list.length*12+40));
+  }};
+};
+
 /* ---------- backup & data ---------- */
 let SNAPS=null;                 // snapshot list, loaded from the server when this view opens
 V.data = () => {
@@ -1083,12 +1371,12 @@ async function loadSnaps(){
 async function replaceDB(next,label,notes,keepHistory){
   const err=validateDB(next); if(err){ toast(err,"err"); return false; }
   if(SkiSync.pending()){ try{ await SkiSync.save(); }catch(_){} }
-  try{ await API("/api/admin/replace",{data:next,label,notes,keep_history:!!keepHistory}); }
+  try{ await API("/api/admin/replace",{data:next,label,notes,keep_history:!!keepHistory}); AN.key=null; }
   catch(e){ toast(e.message,"err"); return false; }
   await SkiSync.reload(); SNAPS=null; render(); return true;
 }
 async function serverAction(path,body,okMsg){
-  try{ await API(path,body||{}); await SkiSync.reload(); SNAPS=null; render(); if(okMsg) toast(okMsg); }
+  try{ await API(path,body||{}); await SkiSync.reload(); SNAPS=null; AN.key=null; render(); if(okMsg) toast(okMsg); }
   catch(e){ toast(e.message,"err"); }
 }
 function importJSON(text,name){
@@ -1140,6 +1428,8 @@ document.addEventListener("click",e=>{
     case "rm-member": removeMember(id); break;
     case "restore-member": restoreMember(id); break;
     case "signout": signOut(); break;
+    case "an-range": go("analytics",{range:el.dataset.r}); break;
+    case "an-csv": anCSV(); break;
     case "go": go(el.dataset.view, el.dataset.q?{q:el.dataset.q}:{}); break;
     case "trace": closeSheet(); go("trace",{q:el.dataset.q}); break;
     case "close": closeSheet(); break;
