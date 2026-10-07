@@ -49,6 +49,7 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1") != "0"      # set 0 only fo
 SESSION_HOURS = int(os.environ.get("SESSION_HOURS", "12"))
 HISTORY_LIMIT = int(os.environ.get("HISTORY_LIMIT", "5000"))      # history rows sent on a full load
 ANALYTICS_MAX_ROWS = int(os.environ.get("ANALYTICS_MAX_ROWS", "200000"))   # safety cap for /api/admin/analytics
+HISTORY_DAY_MAX = int(os.environ.get("HISTORY_DAY_MAX", "20000"))            # safety cap for /api/admin/history
 MAX_SNAPSHOTS = 15
 LOGIN_MAX_FAILS = 10                                              # per IP, per 10 minutes
 WRITE_LOCK = 734001                                               # pg advisory lock key
@@ -914,6 +915,25 @@ def analytics(cur, u):
     return jsonify(rows=[[r["id"], r["ts"], r["user_id"], r["action"], r["storage_id"], r["notes"]]
                          for r in rows[:ANALYTICS_MAX_ROWS]],
                    oldest=m["oldest"], total=m["total"], truncated=truncated)
+
+
+# ---------------- history by day ----------------
+@app.get("/api/admin/history")
+@auth(admin=True, repeatable=True)
+def history_range(cur, u):
+    """Full history rows for one time window (the admin's "by day" view).
+
+    The browser sends the bounds of the local day as epoch ms, so the day
+    follows the hotel's timezone, not the server's.
+    """
+    start, end = to_ts(request.args.get("from")), to_ts(request.args.get("to"))
+    if not start or not end or end <= start:
+        raise ApiError(400, "from and to are required")
+    cur.execute('SELECT * FROM history WHERE "timestamp" >= %s AND "timestamp" < %s '
+                'ORDER BY "timestamp" DESC, id DESC LIMIT %s', (start, end, HISTORY_DAY_MAX + 1))
+    rows = cur.fetchall()
+    return jsonify(rows=[row_out("history", r, with_rev=False) for r in rows[:HISTORY_DAY_MAX]],
+                   truncated=len(rows) > HISTORY_DAY_MAX)
 
 
 if __name__ == "__main__":
