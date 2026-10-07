@@ -278,6 +278,7 @@ const eqCount = id => eqOf(id).reduce((a,e)=>a+(+e.quantity||0),0);
 const cardsOfStorage = id => DB.cards.filter(c=>c.storage_id===id);
 const cardsOfRoom = id => DB.cards.filter(c=>c.room_id===id);
 const storagesOfRoom = id => DB.storages.filter(s=>s.room_id===id);
+const guestOf = r => r && r.status!=="checked_out" ? (r.guest_name||"") : "";
 function normCode(s){ return String(s??"").toUpperCase().replace(/[^A-Z0-9]/g,""); }
 
 function log(action,o={}){
@@ -519,7 +520,7 @@ function traceStorage(s, why){
       ${cards.length?cards.map(c=>`<div class="node"><small>Key card · ${esc(c.status)}</small><b class="mono">${esc(c.card_code)}</b></div>`).join("")
         :`<div class="node missing"><small>Key card</small><b>none</b></div>`}
       <span class="arrow">→</span>
-      <div class="node ${s.room_id!=null&&!r?"missing":""}"><small>Room</small><b>${r?esc(r.room_number)+(r.guest_name?" · "+esc(r.guest_name):""):s.room_id!=null?"deleted #"+s.room_id:"—"}</b></div>
+      <div class="node ${s.room_id!=null&&!r?"missing":""}"><small>Room</small><b>${r?esc(r.room_number)+(guestOf(r)?" · "+esc(guestOf(r)):""):s.room_id!=null?"deleted #"+s.room_id:"—"}</b></div>
       <span class="arrow">→</span>
       <div class="node"><small>Storage · ${esc(s.section||"")}</small><b>${esc(s.storage_number)}</b> ${chip(s.status,STATUS[s.status]||s.status)}</div>
       <span class="arrow">→</span>
@@ -542,7 +543,7 @@ function openDetail(col,id){
     body=traceStorage(rec,"Storage");
   } else if(col==="rooms"){
     const sts=storagesOfRoom(rec.id), cs=cardsOfRoom(rec.id);
-    title="Room "+rec.room_number; sub=`${esc(rec.guest_name||"No guest name")} · ${ROOM_STATUS[rec.status]||esc(rec.status||"staying")}`;
+    title="Room "+rec.room_number; sub=`${esc(guestOf(rec)||"No guest name")} · ${ROOM_STATUS[rec.status]||esc(rec.status||"staying")}`;
     body=`<div class="panel tiny" style="margin-bottom:12px">
         ${kv("Departure",esc(rec.departure||"—"))}${kv("Key cards",cs.map(c=>`<span class="mono">${esc(c.card_code)}</span>`).join(", ")||"—")}
         ${kv("Storages",sts.map(s=>esc(s.storage_number)).join(", ")||"—")}${kv("Items",sts.reduce((a,s)=>a+eqCount(s.id),0))}</div>
@@ -590,7 +591,7 @@ function traceHTML(q){
   if(!q) return `<div class="dim" style="text-align:center;padding:30px">Type something to search.</div>`;
   const L=q.toLowerCase(), N=normCode(q), out=[], shown=new Set();
   const cards=N.length>2?DB.cards.filter(c=>normCode(c.card_code).includes(N)):[];
-  const rooms=DB.rooms.filter(r=>String(r.room_number).toLowerCase()===L||(L.length>1&&(r.guest_name||"").toLowerCase().includes(L))||(L.length>1&&String(r.room_number).toLowerCase().includes(L)));
+  const rooms=DB.rooms.filter(r=>String(r.room_number).toLowerCase()===L||(L.length>1&&guestOf(r).toLowerCase().includes(L))||(L.length>1&&String(r.room_number).toLowerCase().includes(L)));
   const sts=DB.storages.filter(s=>String(s.storage_number).toLowerCase().includes(L)||normCode(s.storage_number)===N);
   const eqs=DB.equipment.filter(e=>[CATS[e.category],e.category,e.type,e.size,e.description].join(" ").toLowerCase().includes(L));
 
@@ -614,8 +615,8 @@ function traceHTML(q){
   });
   rooms.forEach(r=>{
     const sts=storagesOfRoom(r.id);
-    sts.forEach(s=>{ if(!shown.has(s.id)){ shown.add(s.id); out.push(traceStorage(s,`Room ${r.room_number}${r.guest_name?" · "+r.guest_name:""}`)); } });
-    if(!sts.length) out.push(`<div class="panel" style="margin-bottom:12px"><div class="row"><b class="grow" style="font-family:var(--display);font-size:20px">Room ${esc(r.room_number)} ${r.guest_name?"· "+esc(r.guest_name):""}</b>
+    sts.forEach(s=>{ if(!shown.has(s.id)){ shown.add(s.id); out.push(traceStorage(s,`Room ${r.room_number}${guestOf(r)?" · "+guestOf(r):""}`)); } });
+    if(!sts.length) out.push(`<div class="panel" style="margin-bottom:12px"><div class="row"><b class="grow" style="font-family:var(--display);font-size:20px">Room ${esc(r.room_number)} ${guestOf(r)?"· "+esc(guestOf(r)):""}</b>
       ${chip(r.status||"staying",ROOM_STATUS[r.status]||r.status)}<button class="btn sm" data-act="edit" data-col="rooms" data-id="${r.id}">Edit room</button></div>
       <p class="muted tiny">No storage is linked to this room. Cards: ${cardsOfRoom(r.id).map(c=>esc(c.card_code)).join(", ")||"none"}.</p>
       <div class="hist">${DB.history.filter(h=>h.room_id===r.id).slice(0,8).map(histEvent).join("")||`<div class="dim tiny">No history.</div>`}</div></div>`);
@@ -637,7 +638,7 @@ function traceHTML(q){
    6. GENERIC TABLES + EDIT FORMS
    ========================================================================== */
 const opt=(o)=>Object.entries(o).map(([v,l])=>({v,l}));
-const roomOpts=()=>[{v:"",l:"— none —"},...[...DB.rooms].sort((a,b)=>String(a.room_number).localeCompare(b.room_number,undefined,{numeric:true})).map(r=>({v:r.id,l:"Room "+r.room_number+(r.guest_name?" · "+r.guest_name:"")}))];
+const roomOpts=()=>[{v:"",l:"— none —"},...[...DB.rooms].sort((a,b)=>String(a.room_number).localeCompare(b.room_number,undefined,{numeric:true})).map(r=>({v:r.id,l:"Room "+r.room_number+(guestOf(r)?" · "+guestOf(r):"")}))];
 const storOpts=()=>[{v:"",l:"— none —"},...[...DB.storages].sort((a,b)=>String(a.storage_number).localeCompare(b.storage_number,undefined,{numeric:true})).map(s=>({v:s.id,l:s.storage_number+" · "+(STATUS[s.status]||s.status)+(s.room_id?" · room "+(room(s.room_id)?.room_number||"?"):"")}))];
 const storOptsReq=()=>storOpts().slice(1);
 
@@ -648,7 +649,7 @@ const SCHEMA = {
       {k:"guest_name",l:"Guest name"},
       {k:"departure",l:"Departure",type:"date"},
       {k:"status",l:"Status",type:"select",opts:()=>opt(ROOM_STATUS),def:"staying"}],
-    cols:[["Room",r=>`<b>${esc(r.room_number)}</b>`],["Guest",r=>esc(r.guest_name||"—")],["Departure",r=>esc(r.departure||"—")],
+    cols:[["Room",r=>`<b>${esc(r.room_number)}</b>`],["Guest",r=>esc(guestOf(r)||"—")],["Departure",r=>esc(r.status!=="checked_out"&&r.departure||"—")],
       ["Status",r=>chip(r.status||"staying",ROOM_STATUS[r.status]||r.status)],
       ["Storages",r=>storagesOfRoom(r.id).map(s=>storLabel(s.id)).join(", ")||`<span class="dim">—</span>`],
       ["Cards",r=>cardsOfRoom(r.id).length],["Updated",r=>ago(r.updated_at)]],
@@ -987,6 +988,11 @@ function saveForm(col,id){
     if(col==="storages"&&target.room_id!=null&&target.status==="available") target.status="preparing";
     if(col==="equipment"){ const s=stor(target.storage_id); if(s&&s.status==="available"){ s.status="occupied"; s.updated_at=now(); } }
     if(col==="rooms"&&target.status==="staying"&&!rec) target.updated_at=now();
+    if(col==="rooms"&&target.status==="checked_out"){
+      target.guest_name=""; target.departure="";
+      cardsOfRoom(target.id).forEach(c=>{ c.last_room_id=c.room_id; c.last_storage_id=c.storage_id??c.last_storage_id;
+        c.room_id=null; c.storage_id=null; c.status="released"; c.released_at=now(); c.updated_at=now(); });
+      storagesOfRoom(target.id).forEach(st=>{ st.room_id=null; st.updated_at=now(); }); }
   },()=>({action:rec?`${S.one[0].toUpperCase()+S.one.slice(1)} edited`:`${S.one[0].toUpperCase()+S.one.slice(1)} created`,
      ...refsOf(col,target||v),notes:rec?diff.join(" · "):S.label(target)}));
   closeSheet(); toast("Saved");

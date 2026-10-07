@@ -439,6 +439,8 @@ const eqOf   = id => DB.equipment.filter(e=>e.storage_id===id);
 const eqCount= id => eqOf(id).reduce((a,e)=>a+(+e.quantity||0),0);
 const storagesOfRoom = id => DB.storages.filter(s=>s.room_id===id);
 
+/* a checked-out room has no guest — the name only lives on in the history */
+const guestOf = r => r && r.status!=="checked_out" ? (r.guest_name||"") : "";
 function normCode(s){ return String(s??"").toUpperCase().replace(/[^A-Z0-9]/g,""); }
 const stInfo = k => STATUS[k] || {label:String(k||"Unknown"), c:"var(--st-attention)"};
 const catInfo = k => CATS[k] || CATS.other;
@@ -1024,7 +1026,7 @@ VIEWS.storage = (p) => {
       </div>
       <div style="margin-top:14px">
         <div class="kv"><span>Room</span><b>${r?esc(r.room_number):"Not assigned"}</b></div>
-        <div class="kv"><span>Guest</span><b>${r&&r.guest_name?esc(r.guest_name):"—"}</b></div>
+        <div class="kv"><span>Guest</span><b>${guestOf(r)?esc(guestOf(r)):"—"}</b></div>
         <div class="kv"><span>Key cards</span><b>${cards.length}</b></div>
         <div class="kv"><span>Equipment</span><b>${items} item${items===1?"":"s"}</b></div>
         <div class="kv"><span>Updated</span><b>${ago(s.updated_at)}</b></div>
@@ -1274,8 +1276,8 @@ function openAssignRoom(id){
   const s=stor(+id); if(!s) return; const cr=room(s.room_id);
   openSheet(`<h3>${cr?"Change room":"Assign room"}</h3><p class="sub">Storage ${esc(s.storage_number)}</p>
     <label class="f"><span>Room number</span><input class="input big" id="arRoom" value="${cr?esc(cr.room_number):""}"></label>
-    <label class="f"><span>Guest name (optional)</span><input class="input" id="arGuest" value="${cr?esc(cr.guest_name||""):""}"></label>
-    <label class="f"><span>Hotel departure</span><input class="input" id="arOut" type="date" value="${cr?esc(cr.departure||""):""}"></label>
+    <label class="f"><span>Guest name (optional)</span><input class="input" id="arGuest" value="${esc(guestOf(cr))}"></label>
+    <label class="f"><span>Hotel departure</span><input class="input" id="arOut" type="date" value="${cr&&cr.status!=="checked_out"?esc(cr.departure||""):""}"></label>
     <div class="btn-grid"><button class="btn" data-act="close-sheet">Cancel</button>
       <button class="btn primary" data-act="do-assign-room" data-id="${s.id}">Save</button></div>`);
 }
@@ -1316,14 +1318,14 @@ function doRelease(id){
 VIEWS.room = (p) => {
   const r=room(p.id); if(!r) return {title:"Room", body:`<div class="empty">Room not found.</div>`};
   const cards=cardsOfRoom(r.id), sts=storagesOfRoom(r.id);
-  return {title:"Room "+r.room_number, sub:r.guest_name?esc(r.guest_name):"No guest name",
+  return {title:"Room "+r.room_number, sub:guestOf(r)?esc(guestOf(r)):(r.status==="checked_out"?"Checked out":"No guest name"),
   body:`
     ${p.notice?`<div class="alert" style="margin-bottom:12px"><span>⚠️</span><span><b>Heads up</b><p>${esc(p.notice)}</p></span></div>`:""}
     <div class="panel">
       <div class="row between"><b class="num" style="font-size:34px">Room ${esc(r.room_number)}</b>
         ${sts[0]?`<span class="tag">${esc(sts[0].storage_number)}</span>`:`<span class="tag ghost">No storage</span>`}</div>
       <div style="margin-top:12px">
-        <div class="kv"><span>Guest</span><b>${esc(r.guest_name||"—")}</b></div>
+        <div class="kv"><span>Guest</span><b>${esc(guestOf(r)||"—")}</b></div>
         <div class="kv"><span>Key cards</span><b>${cards.length}</b></div>
         <div class="kv"><span>Departure</span><b>${r.departure?fmtDay(r.departure)+(daysTo(r.departure)===0?" · today":daysTo(r.departure)<0?" · overdue":""):"Not set"}</b></div>
         <div class="kv"><span>Storages</span><b>${sts.length}</b></div>
@@ -1361,13 +1363,13 @@ VIEWS.rooms = (p={}) => {
     ${hidden?`<button class="btn ghost" style="margin-top:12px" data-act="rooms-all">${p.all?"Hide checked-out rooms":`Show ${hidden} checked-out room${hidden===1?"":"s"}`}</button>`:""}`,
   after(){ const i=$("#qRooms"); i.addEventListener("input",()=>{
       const q=i.value.trim().toLowerCase();
-      $("#roomList").innerHTML=rows.filter(r=>!q||String(r.room_number??"").toLowerCase().includes(q)||(r.guest_name||"").toLowerCase().includes(q)).map(roomRow).join("")||`<div class="empty">No room matches “${esc(q)}”.</div>`;
+      $("#roomList").innerHTML=rows.filter(r=>!q||String(r.room_number??"").toLowerCase().includes(q)||guestOf(r).toLowerCase().includes(q)).map(roomRow).join("")||`<div class="empty">No room matches “${esc(q)}”.</div>`;
     }); }};
 };
 function roomRow(r){
   const sts=storagesOfRoom(r.id);
   return `<button class="item" data-act="nav" data-view="room" data-id="${r.id}">
-    <span class="body"><b>Room ${esc(r.room_number)}</b><small>${esc(r.guest_name||"—")} · ${cardsOfRoom(r.id).length} cards</small></span>
+    <span class="body"><b>Room ${esc(r.room_number)}</b><small>${r.status==="checked_out"&&!cardsOfRoom(r.id).length?"Checked out":`${esc(guestOf(r)||"—")} · ${cardsOfRoom(r.id).length} cards`}</small></span>
     ${sts[0]?`<span class="tag sm">${esc(sts[0].storage_number)}</span>`:`<span class="tag sm ghost">—</span>`}<span class="arr">›</span></button>`;
 }
 
@@ -1440,7 +1442,7 @@ VIEWS.departures = () => {
         <b class="num" style="font-size:26px">Room ${esc(r.room_number)}</b>
         <span class="chip ${hot?"solid s-attention":""}">${lbl} · ${fmtDay(r.departure)}</span>
       </div>
-      <div class="kv"><span>Guest</span><b>${esc(r.guest_name||"—")}</b></div>
+      <div class="kv"><span>Guest</span><b>${esc(guestOf(r)||"—")}</b></div>
       <div class="kv"><span>Storage</span><b>${sts.map(x=>esc(x.storage_number)).join(", ")}</b></div>
       <div class="kv"><span>Still stored</span><b>${items} item${items===1?"":"s"}</b></div>
       <div class="kv"><span>Key cards</span><b>${cardsOfRoom(r.id).length}</b></div>
@@ -1533,7 +1535,7 @@ function searchHTML(q){
   if(!q) return `<div class="empty"><span class="ic">🔎</span>Type a room, storage, card code, guest name, item or status.</div>`;
   const L=q.toLowerCase(), N=normCode(q), out=[];
   const cards=N.length>2?DB.cards.filter(c=>normCode(c.card_code).includes(N)):[];
-  const rooms=DB.rooms.filter(r=>String(r.room_number??"").toLowerCase().includes(L)||(r.guest_name||"").toLowerCase().includes(L));
+  const rooms=DB.rooms.filter(r=>String(r.room_number??"").toLowerCase().includes(L)||guestOf(r).toLowerCase().includes(L));
   const sts=DB.storages.filter(s=>String(s.storage_number??"").toLowerCase().includes(L)||(N&&normCode(s.storage_number).includes(N))||stInfo(s.status).label.toLowerCase().includes(L)
     ||eqOf(s.id).some(e=>catInfo(e.category).label.toLowerCase().includes(L)||(e.type||"").toLowerCase().includes(L)));
   if(cards.length) out.push(`<h2 class="sec">Key cards · ${cards.length}</h2><div class="list">${cards.map(c=>`
