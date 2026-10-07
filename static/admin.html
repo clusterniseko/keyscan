@@ -391,6 +391,9 @@ function checkIntegrity(){
   });
 
   DB.rooms.forEach(r=>{
+    if(!storagesOfRoom(r.id).length && !cardsOfRoom(r.id).length && (r.status!=="checked_out"||r.guest_name||r.departure))
+      add(false,"Room not released",`Room ${r.room_number} has no storage or cards but still shows ${r.guest_name?"guest "+r.guest_name:"as staying"}.`,
+        ()=>{ r.status="checked_out"; r.guest_name=""; r.departure=""; r.updated_at=now(); });
     if(r.status==="checked_out" && storagesOfRoom(r.id).length) add(false,"Checked-out room still owns storage",
       `Room ${r.room_number} is checked out but still has ${storagesOfRoom(r.id).map(s=>s.storage_number).join(", ")}.`,()=>{ r.status="staying"; });
     if(r.room_number==null||String(r.room_number).trim()==="") add(false,"Room without number",`Room record #${r.id} has no number.`,null,{view:"rooms",q:String(r.id)});
@@ -454,7 +457,7 @@ async function doLogin(){
   finally{ busy=false; }
 }
 async function signOut(){
-  closeSheet(); SESSION=null; AN={key:null,rows:null,from:0,oldest:null,total:null,truncated:false,err:null,loading:null}; AN_H=null;
+  closeSheet(); SESSION=null; AN={key:null,rows:null,from:0,oldest:null,total:null,truncated:false,err:null,loading:null}; AN_H=null; HD={day:null,rows:null,truncated:false,err:null,loading:null};
   if(SkiSync.pending()){ try{ await SkiSync.save(); }catch(_){} }
   SkiSync.stop(); DB=normalise(null);
   try{ await API("/api/logout",{}); }catch(_){}
@@ -1025,34 +1028,122 @@ function saveRaw(col,id){
     {action:"Raw record edited",...refsOf(col,v),notes:`${col} #${id}`});
   closeSheet(); toast("Record saved");
 }
-function toCSV(col){
-  const rows=DB[col]; if(!rows.length){ toast("Nothing to export","info"); return; }
+function toCSV(col,rows=DB[col],name){
+  if(!rows.length){ toast("Nothing to export","info"); return; }
   const keys=[...new Set(rows.flatMap(r=>Object.keys(r)))];
   const cell=v=>{ const s=v==null?"":typeof v==="object"?JSON.stringify(v):String(v); return /[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s; };
-  download(`skivalet-${col}-${stamp()}.csv`,[keys.join(","),...rows.map(r=>keys.map(k=>cell(r[k])).join(","))].join("\n"),"text/csv");
+  download(name||`skivalet-${col}-${stamp()}.csv`,[keys.join(","),...rows.map(r=>keys.map(k=>cell(r[k])).join(","))].join("\n"),"text/csv");
 }
 
-/* ---------- history ---------- */
-V.history = (p) => ({body:`
+/* ---------- history ----------
+   "All" shows what this console holds (the latest 5,000 records), grouped by day.
+   Picking a day loads that whole day straight from the database, so older days
+   work too; new records arriving through SkiSync are merged in live. */
+let HD={day:null,rows:null,truncated:false,err:null,loading:null}, histRedraw=null, histRows=[];
+const isoToday = () => dKey(now());
+function dayBounds(iso){ const [y,m,d]=iso.split("-").map(Number); return [new Date(y,m-1,d).getTime(), new Date(y,m-1,d+1).getTime()]; }
+function shiftDay(iso,n){ const [y,m,d]=iso.split("-").map(Number); return dKey(new Date(y,m-1,d+n).getTime()); }
+function dayLabel(iso){
+  const [y,m,d]=iso.split("-").map(Number), t=isoToday();
+  const rel=iso===t?" · Today":iso===shiftDay(t,-1)?" · Yesterday":"";
+  return `${WD[wdIdx(new Date(y,m-1,d).getTime())]} ${d} ${MON[m-1]} ${y}${rel}`;
+}
+async function hdLoad(day){
+  if(HD.loading===day) return; HD.loading=day;
+  const [a,b]=dayBounds(day);
+  try{ const r=await API(`/api/admin/history?from=${a}&to=${b}`); HD={day,rows:r.rows,truncated:!!r.truncated,err:null,loading:null}; }
+  catch(e){ HD={day,rows:null,truncated:false,err:e.message,loading:null}; }
+  if(SESSION && view==="history" && params.day===day && histRedraw) histRedraw();
+}
+function dayRows(day){
+  const [a,b]=dayBounds(day), live=DB.history.filter(h=>h.timestamp>=a&&h.timestamp<b);
+  if(HD.day!==day || !HD.rows) return live;
+  const ids=new Set(HD.rows.map(h=>h.id));
+  return live.filter(h=>!ids.has(h.id)).concat(HD.rows).sort((x,y)=>y.timestamp-x.timestamp);
+}
+function daySummary(rows){
+  const c={checkin:0,items:0,handout:0,return:0,depart:0,arrive:0}, staff=new Set();
+  rows.forEach(h=>{ const k=anKind(h); if(k&&c[k]!=null) c[k]++;
+    if(k==="checkin") c.items+=anItems(h.notes).reduce((a,[,q])=>a+q,0);
+    if(!String(h.action).startsWith("[Admin]")&&h.user_id!=null) staff.add(h.user_id); });
+  const T=(n,l,col)=>`<div class="stat" style="--c:${col}"><b>${n}</b><span>${l}</span></div>`;
+  return `<div class="stats an4" style="margin-bottom:16px">
+    ${T(c.checkin,"Check-ins","var(--glacier)")}${T(c.items,"Items checked in","var(--st-occupied)")}
+    ${T(c.handout,"Hand-outs","var(--st-guest)")}${T(c.return,"Returns","var(--st-ready)")}
+    ${T(c.depart,"Departures","var(--signal)")}${T(c.arrive,"Cards registered","var(--mist)")}
+    ${T(staff.size,"Active staff","var(--st-preparing)")}${T(rows.length,"Records","var(--dim)")}</div>`;
+}
+function histCSV(){
+  if(!histRows.length){ toast("Nothing to export","info"); return; }
+  const rows=histRows.map(h=>({time:fmtDT(h.timestamp),staff:user(h.user_id)?.name||"System",action:h.action,
+    room:room(h.room_id)?.room_number??(h.room_id??""),storage:stor(h.storage_id)?.storage_number??(h.storage_id??""),
+    card:card(h.key_card_id)?.card_code??(h.key_card_id??""),notes:h.notes||"",from:h.prev||"",to:h.next||""}));
+  toCSV("history",rows,`skivalet-history-${params.day||"latest"}-${stamp()}.csv`);
+}
+V.history = (p) => {
+  const day=p.day||"", t=isoToday(), y=shiftDay(t,-1), uSel=String(p.u||"");
+  return {body:`
   <h1>History</h1>
-  <p class="lead">Full audit trail (the app keeps the latest 600 records). Admin changes are marked <span style="color:var(--signal)">[Admin]</span>.</p>
+  <p class="lead">Full audit trail. Admin changes are marked <span style="color:var(--signal)">[Admin]</span>.
+    Pick a day to see every record of that day — older days are loaded from the database.</p>
+  <div class="toolbar">
+    <div class="seg">
+      <button class="${day?"":"on"}" data-act="hist-day" data-day="">All</button>
+      <button class="${day===t?"on":""}" data-act="hist-day" data-day="${t}">Today</button>
+      <button class="${day===y?"on":""}" data-act="hist-day" data-day="${y}">Yesterday</button>
+    </div>
+    <button class="btn sm" data-act="hist-shift" data-n="-1" title="Previous day">‹</button>
+    <input class="input" type="date" id="hDay" value="${esc(day)}" max="${t}" style="width:auto">
+    <button class="btn sm" data-act="hist-shift" data-n="1" title="Next day" ${day&&day<t?"":"disabled"}>›</button>
+  </div>
+  <div id="hSum"></div>
   <div class="toolbar">
     <div class="searchbar">🔎<input id="hQ" value="${esc(p.q||"")}" placeholder="Action, staff, room, storage, card, note…" autocomplete="off"></div>
-    <select class="input" id="hU"><option value="">Everyone</option>${DB.users.filter(u=>(!u.retired&&!u.archived)||DB.history.some(h=>h.user_id===u.id)).map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join("")}<option value="sys">System</option></select>
-    <button class="btn ghost" data-act="csv" data-col="history">CSV</button>
+    <select class="input" id="hU"><option value="">Everyone</option>${DB.users.filter(u=>(!u.retired&&!u.archived)||DB.history.some(h=>h.user_id===u.id))
+      .map(u=>`<option value="${u.id}" ${uSel===String(u.id)?"selected":""}>${esc(u.name)}</option>`).join("")}<option value="sys" ${uSel==="sys"?"selected":""}>System</option></select>
+    <button class="btn ghost" data-act="hist-csv">CSV</button>
   </div>
-  <div class="hist" id="hList"></div><div class="pager" id="hPager"></div>`,
+  <div id="hList"></div><div class="pager" id="hPager"></div>`,
   after(){
-    const draw=()=>{ const q=$("#hQ").value.trim().toLowerCase(), u=$("#hU").value; params.q=$("#hQ").value;
-      const rows=DB.history.filter(h=>{
+    if(day && HD.day!==day && HD.loading!==day) hdLoad(day);
+    const draw=()=>{
+      if(!$("#hQ")) return;
+      const q=$("#hQ").value.trim().toLowerCase(), u=$("#hU").value; params.q=$("#hQ").value; params.u=u;
+      const base=day?dayRows(day):DB.history;
+      const rows=base.filter(h=>{
         if(u==="sys"&&h.user_id!=null) return false;
         if(u&&u!=="sys"&&h.user_id!==+u) return false;
         if(!q) return true;
         return [h.action,user(h.user_id)?.name,room(h.room_id)?.room_number,stor(h.storage_id)?.storage_number,card(h.key_card_id)?.card_code,h.notes,h.prev,h.next].join(" ").toLowerCase().includes(q); });
-      $("#hList").innerHTML=rows.slice(0,250).map(histEvent).join("")||`<div class="dim">No records match.</div>`;
-      $("#hPager").textContent=rows.length>250?`Showing 250 of ${rows.length}`:`${rows.length} records`; };
-    $("#hQ").addEventListener("input",draw); $("#hU").addEventListener("change",draw); draw();
-  }});
+      histRows=rows;
+      const LIM=day?1000:250;
+      if(day){
+        const st = HD.day===day
+          ? (HD.err?`<div class="banner">Couldn't load this day from the database (${esc(HD.err)}) — showing only the records this console holds.</div>`
+            :HD.truncated?`<div class="banner">Very busy day — only the newest ${HD.rows.length} records were loaded.</div>`:"")
+          : `<p class="dim tiny" style="margin:0 0 10px">Loading the full day from the database…</p>`;
+        $("#hSum").innerHTML=`<h2 class="sec" style="margin-top:4px">${esc(dayLabel(day))}</h2>${st}${daySummary(base)}`;
+        $("#hList").innerHTML=rows.length?`<div class="hist">${rows.slice(0,LIM).map(histEvent).join("")}</div>`
+          :`<div class="panel dim" style="text-align:center">${base.length?"No records match the filter.":"No activity on this day."}</div>`;
+      } else {
+        $("#hSum").innerHTML="";
+        const per={}; rows.forEach(h=>{ const k=dKey(h.timestamp); per[k]=(per[k]||0)+1; });
+        let html="", curDay=null, open=false;
+        rows.slice(0,LIM).forEach(h=>{ const k=dKey(h.timestamp);
+          if(k!==curDay){ if(open) html+=`</div>`; curDay=k; open=true;
+            html+=`<h2 class="sec"><span class="lnk" data-act="hist-day" data-day="${k}">${esc(dayLabel(k))}</span> · ${per[k]}</h2><div class="hist">`; }
+          html+=histEvent(h); });
+        if(open) html+=`</div>`;
+        $("#hList").innerHTML=html||`<div class="dim">No records match.</div>`;
+      }
+      $("#hPager").textContent=rows.length>LIM?`Showing ${LIM} of ${rows.length}`:`${rows.length} records`;
+    };
+    histRedraw=draw;
+    $("#hQ").addEventListener("input",draw); $("#hU").addEventListener("change",draw);
+    $("#hDay").addEventListener("change",e=>go("history",{q:params.q,u:params.u,day:e.target.value}));
+    draw();
+  }};
+};
 
 /* ---------- analytics ----------
    Everything is computed from the audit trail the valet app already writes, plus
@@ -1371,12 +1462,12 @@ async function loadSnaps(){
 async function replaceDB(next,label,notes,keepHistory){
   const err=validateDB(next); if(err){ toast(err,"err"); return false; }
   if(SkiSync.pending()){ try{ await SkiSync.save(); }catch(_){} }
-  try{ await API("/api/admin/replace",{data:next,label,notes,keep_history:!!keepHistory}); AN.key=null; }
+  try{ await API("/api/admin/replace",{data:next,label,notes,keep_history:!!keepHistory}); AN.key=null; HD.day=null; }
   catch(e){ toast(e.message,"err"); return false; }
   await SkiSync.reload(); SNAPS=null; render(); return true;
 }
 async function serverAction(path,body,okMsg){
-  try{ await API(path,body||{}); await SkiSync.reload(); SNAPS=null; AN.key=null; render(); if(okMsg) toast(okMsg); }
+  try{ await API(path,body||{}); await SkiSync.reload(); SNAPS=null; AN.key=null; HD.day=null; render(); if(okMsg) toast(okMsg); }
   catch(e){ toast(e.message,"err"); }
 }
 function importJSON(text,name){
@@ -1430,6 +1521,10 @@ document.addEventListener("click",e=>{
     case "signout": signOut(); break;
     case "an-range": go("analytics",{range:el.dataset.r}); break;
     case "an-csv": anCSV(); break;
+    case "hist-day": go("history",{q:params.q,u:params.u,day:el.dataset.day}); break;
+    case "hist-shift": { const t=isoToday(), d=params.day?shiftDay(params.day,+el.dataset.n):t;
+      if(d<=t) go("history",{q:params.q,u:params.u,day:d}); break; }
+    case "hist-csv": histCSV(); break;
     case "go": go(el.dataset.view, el.dataset.q?{q:el.dataset.q}:{}); break;
     case "trace": closeSheet(); go("trace",{q:el.dataset.q}); break;
     case "close": closeSheet(); break;

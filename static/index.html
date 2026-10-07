@@ -934,17 +934,13 @@ function doReassign(cardId,roomId,storageId){
    ========================================================================== */
 VIEWS.register = (p) => {
   const freeStorages = DB.storages.filter(s=>s.status==="available");
-  const old = cardByCode(p.code);                       // released card coming back
-  const prevRoom = old && old.last_room_id!=null ? room(old.last_room_id) : null;
+  const old = cardByCode(p.code);                       // released card coming back (rooms rotate, so no room is suggested)
   return {title: old?"Returning card":"New key card", sub: old?"Released — ready to reuse":"Not registered yet",
   body:`
     <div class="panel" style="text-align:center;border-color:var(--st-ready)">
       <div class="eyebrow">Card code detected</div>
       <div class="mono" style="font-size:26px;font-weight:700;margin-top:6px">${esc(p.code)}</div>
     </div>
-    ${prevRoom?`<div class="alert" style="margin-top:10px"><span>↩️</span><span>
-      <b>Used before</b><p>This card was linked to room ${esc(prevRoom.room_number)}${old.released_at?", released "+ago(old.released_at):""}. Tap to reuse the room, or type a different one.</p>
-      <button class="btn sm" style="margin-top:8px" data-act="reuse-room" data-n="${esc(prevRoom.room_number)}" data-g="${esc(prevRoom.guest_name||"")}">Use room ${esc(prevRoom.room_number)}</button></span></div>`:""}
     <h2 class="sec">Link the card</h2>
     <div class="panel">
       <label class="f"><span>Room number</span>
@@ -954,7 +950,7 @@ VIEWS.register = (p) => {
       <label class="f"><span>Storage number</span>
         <input class="input" id="fStorage" placeholder="Storage" autocomplete="off" autocapitalize="characters"></label>
       <label class="f"><span>Hotel departure (optional)</span>
-        <input class="input" id="fOut" type="date" value="${prevRoom&&prevRoom.departure?esc(prevRoom.departure):""}"></label>
+        <input class="input" id="fOut" type="date" value=""></label>
       <div class="hint">Either field can be left empty — a storage can be prepared before the room is known, and a room can be registered before a storage is free.</div>
     </div>
     <h2 class="sec">Free storages</h2>
@@ -980,7 +976,8 @@ function saveNewCard(code,next){
   }
   if(rNum){
     if(!r){ r={id:uid(),room_number:rNum,guest_name:guest,departure:dep,status:"staying",created_at:now(),updated_at:now()}; DB.rooms.push(r); }
-    else { if(guest) r.guest_name=guest; if(dep) r.departure=dep; r.status="staying"; r.updated_at=now(); } }
+    else { if(r.status==="checked_out"){ r.guest_name=guest; r.departure=dep; } else { if(guest) r.guest_name=guest; if(dep) r.departure=dep; }
+      r.status="staying"; r.updated_at=now(); } }
   if(normCode(sNum)){
     if(!s){ s={id:uid(),storage_number:sNum,section:"Unassigned area",status:"available",room_id:null,created_at:now(),updated_at:now()}; DB.storages.push(s); }
     if(r){ s.room_id=r.id; s.updated_at=now(); if(s.status==="available") setStorageStatus(s,"preparing","Assigned at card registration"); }
@@ -1212,29 +1209,34 @@ function confirmFinalOut(storageId){
 }
 /* Frees a storage: equipment records removed, every card of the storage (and
    the room's cards, if this was its last storage) released for reuse. */
+/* A room with no storage and no cards is free: wipe the guest so the next stay
+   starts clean (the guest name stays in the history notes). */
+function freeRoom(r){
+  if(!r || storagesOfRoom(r.id).length || cardsOfRoom(r.id).length) return false;
+  r.status="checked_out"; r.guest_name=""; r.departure=""; r.updated_at=now();
+  return true;
+}
 function releaseAll(s,next){
   const r=room(s.room_id);
   const cards=new Set(cardsOfStorage(s.id));
   s.room_id=null; s.status=next; s.updated_at=now();
-  if(r && !storagesOfRoom(r.id).length){
-    cardsOfRoom(r.id).forEach(c=>cards.add(c));
-    r.status="checked_out"; r.updated_at=now();
-  }
+  if(r && !storagesOfRoom(r.id).length) cardsOfRoom(r.id).forEach(c=>cards.add(c));
   cards.forEach(c=>{
     c.last_room_id=c.room_id??(r?r.id:null); c.last_storage_id=c.storage_id??s.id;
     c.room_id=null; c.storage_id=null; c.status="released"; c.released_at=now(); c.updated_at=now();
   });
   DB.equipment=DB.equipment.filter(e=>e.storage_id!==s.id);
+  freeRoom(r);
   return cards.size;
 }
 function doFinalOut(id,next){
   const s=stor(+id); if(!s){ closeSheet(); home(); return; }
-  const r=room(s.room_id), eq=eqOf(s.id);
+  const r=room(s.room_id), eq=eqOf(s.id), guest=r?.guest_name||"";
   const manifest=eq.map(e=>`${catInfo(e.category).label} ×${e.quantity}`).join(", ")||"no items";
   const prev=stInfo(s.status).label, roomId=s.room_id;
   const n=releaseAll(s,next);
   log("Checked out & released",{storage_id:s.id,room_id:roomId,prev,next:stInfo(next).label,
-    notes:`${manifest} · ${n} card${n===1?"":"s"} released${r?" · room "+r.room_number:""}`});
+    notes:`${manifest} · ${n} card${n===1?"":"s"} released${r?" · room "+r.room_number:""}${guest?" · "+guest:""}`});
   save(); closeSheet(); toast("Checked out · "+s.storage_number+" released");
   home();
 }
@@ -1283,7 +1285,8 @@ function doAssignRoom(id){
   if(!num){ toast("Enter a room number","err"); return; }
   let r=roomByNumber(num);
   if(!r){ r={id:uid(),room_number:num,guest_name:guest,departure:dep,status:"staying",created_at:now(),updated_at:now()}; DB.rooms.push(r); }
-  else { if(guest) r.guest_name=guest; if(dep) r.departure=dep; r.status="staying"; r.updated_at=now(); }
+  else { if(r.status==="checked_out"){ r.guest_name=guest; r.departure=dep; } else { if(guest) r.guest_name=guest; if(dep) r.departure=dep; }
+    r.status="staying"; r.updated_at=now(); }
   const prev=room(s.room_id)?.room_number||"—";
   s.room_id=r.id; s.updated_at=now();
   if(s.status==="available") setStorageStatus(s,"preparing");
@@ -1301,9 +1304,9 @@ function releaseStorage(id){
 }
 function doRelease(id){
   const s=stor(+id); if(!s){ closeSheet(); return; }
-  const prev=stInfo(s.status).label, roomId=s.room_id;
+  const prev=stInfo(s.status).label, roomId=s.room_id, guest=room(s.room_id)?.guest_name||"";
   const n=releaseAll(s,"available");
-  log("Storage cleared",{storage_id:s.id,room_id:roomId,prev,next:"Available",notes:`${n} card${n===1?"":"s"} released`});
+  log("Storage cleared",{storage_id:s.id,room_id:roomId,prev,next:"Available",notes:`${n} card${n===1?"":"s"} released${guest?" · "+guest:""}`});
   save(); closeSheet(); toast("Storage cleared"); replaceView("storages",{});
 }
 
@@ -1348,11 +1351,14 @@ function storageRow(s){
     <span class="body"><b>${r?"Room "+esc(r.room_number):"No room"}</b><small>${esc(s.section||"—")} · ${eqCount(s.id)} items</small></span>
     <span class="chip s-${esc(s.status)}"><i class="dot"></i>${esc(st.label)}</span><span class="arr">›</span></button>`;
 }
-VIEWS.rooms = () => {
-  const rows=[...DB.rooms].sort((a,b)=>String(a.room_number??"").localeCompare(String(b.room_number??""),undefined,{numeric:true}));
-  return {title:"Rooms", sub:rows.length+" registered",
+VIEWS.rooms = (p={}) => {
+  const all=[...DB.rooms].sort((a,b)=>String(a.room_number??"").localeCompare(String(b.room_number??""),undefined,{numeric:true}));
+  const live = r => r.status!=="checked_out" || storagesOfRoom(r.id).length || cardsOfRoom(r.id).length;
+  const active = all.filter(live), rows = p.all ? all : active, hidden = all.length-active.length;
+  return {title:"Rooms", sub:active.length+" in use"+(p.all&&hidden?` · ${hidden} checked out`:""),
   body:`<div class="searchbar" style="margin-bottom:12px">🔎<input id="qRooms" placeholder="Room number or guest" autocomplete="off"></div>
-    <div class="list" id="roomList">${rows.map(roomRow).join("")}</div>`,
+    <div class="list" id="roomList">${rows.map(roomRow).join("")||`<div class="empty"><span class="ic">🚪</span>No rooms are using the valet right now.</div>`}</div>
+    ${hidden?`<button class="btn ghost" style="margin-top:12px" data-act="rooms-all">${p.all?"Hide checked-out rooms":`Show ${hidden} checked-out room${hidden===1?"":"s"}`}</button>`:""}`,
   after(){ const i=$("#qRooms"); i.addEventListener("input",()=>{
       const q=i.value.trim().toLowerCase();
       $("#roomList").innerHTML=rows.filter(r=>!q||String(r.room_number??"").toLowerCase().includes(q)||(r.guest_name||"").toLowerCase().includes(q)).map(roomRow).join("")||`<div class="empty">No room matches “${esc(q)}”.</div>`;
@@ -1737,12 +1743,15 @@ document.addEventListener("click", e=>{
         <div class="btn-grid"><button class="btn" data-act="close-sheet">Cancel</button>
         <button class="btn danger" data-act="do-unlink" data-id="${c.id}">Remove card</button></div>`); break; }
     case "do-unlink": { const c=card(id); if(!c){ closeSheet(); break; }
-      log("Key card removed",{key_card_id:c.id,room_id:c.room_id,storage_id:c.storage_id});
+      const ur=room(c.room_id);
+      log("Key card removed",{key_card_id:c.id,room_id:c.room_id,storage_id:c.storage_id,notes:ur?.guest_name||""});
       // released rather than deleted: history keeps pointing at it and the card is reusable
       c.last_room_id=c.room_id; c.last_storage_id=c.storage_id;
       Object.assign(c,{room_id:null,storage_id:null,status:"released",released_at:now(),updated_at:now()});
+      freeRoom(ur);
       save(); closeSheet(); toast("Key card removed"); render(); break; }
     case "staff-log": go("history",{staff:id}); break;
+    case "rooms-all": replaceView("rooms",{all:!current().params.all}); break;
     case "set-pin": setPin(); break;
     case "set-admin": setAdminLogin(); break;
     case "add-member": addMember(); break;
