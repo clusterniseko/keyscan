@@ -278,6 +278,8 @@ const eqCount = id => eqOf(id).reduce((a,e)=>a+(+e.quantity||0),0);
 const cardsOfStorage = id => DB.cards.filter(c=>c.storage_id===id);
 const cardsOfRoom = id => DB.cards.filter(c=>c.room_id===id);
 const storagesOfRoom = id => DB.storages.filter(s=>s.room_id===id);
+const roomRank = r => storagesOfRoom(r.id).length ? 0 : cardsOfRoom(r.id).length ? 1 : 2;
+const byRoom = (a,b) => roomRank(a)-roomRank(b) || String(a.room_number??"").localeCompare(String(b.room_number??""),undefined,{numeric:true});
 const guestOf = r => r && r.status!=="checked_out" ? (r.guest_name||"") : "";
 function normCode(s){ return String(s??"").toUpperCase().replace(/[^A-Z0-9]/g,""); }
 
@@ -591,7 +593,7 @@ function traceHTML(q){
   if(!q) return `<div class="dim" style="text-align:center;padding:30px">Type something to search.</div>`;
   const L=q.toLowerCase(), N=normCode(q), out=[], shown=new Set();
   const cards=N.length>2?DB.cards.filter(c=>normCode(c.card_code).includes(N)):[];
-  const rooms=DB.rooms.filter(r=>String(r.room_number).toLowerCase()===L||(L.length>1&&guestOf(r).toLowerCase().includes(L))||(L.length>1&&String(r.room_number).toLowerCase().includes(L)));
+  const rooms=DB.rooms.filter(r=>String(r.room_number).toLowerCase()===L||(L.length>1&&guestOf(r).toLowerCase().includes(L))||(L.length>1&&String(r.room_number).toLowerCase().includes(L))).sort(byRoom);
   const sts=DB.storages.filter(s=>String(s.storage_number).toLowerCase().includes(L)||normCode(s.storage_number)===N);
   const eqs=DB.equipment.filter(e=>[CATS[e.category],e.category,e.type,e.size,e.description].join(" ").toLowerCase().includes(L));
 
@@ -638,7 +640,7 @@ function traceHTML(q){
    6. GENERIC TABLES + EDIT FORMS
    ========================================================================== */
 const opt=(o)=>Object.entries(o).map(([v,l])=>({v,l}));
-const roomOpts=()=>[{v:"",l:"— none —"},...[...DB.rooms].sort((a,b)=>String(a.room_number).localeCompare(b.room_number,undefined,{numeric:true})).map(r=>({v:r.id,l:"Room "+r.room_number+(guestOf(r)?" · "+guestOf(r):"")}))];
+const roomOpts=()=>[{v:"",l:"— none —"},...[...DB.rooms].sort(byRoom).map(r=>({v:r.id,l:"Room "+r.room_number+(guestOf(r)?" · "+guestOf(r):"")}))];
 const storOpts=()=>[{v:"",l:"— none —"},...[...DB.storages].sort((a,b)=>String(a.storage_number).localeCompare(b.storage_number,undefined,{numeric:true})).map(s=>({v:s.id,l:s.storage_number+" · "+(STATUS[s.status]||s.status)+(s.room_id?" · room "+(room(s.room_id)?.room_number||"?"):"")}))];
 const storOptsReq=()=>storOpts().slice(1);
 
@@ -654,7 +656,7 @@ const SCHEMA = {
       ["Storages",r=>storagesOfRoom(r.id).map(s=>storLabel(s.id)).join(", ")||`<span class="dim">—</span>`],
       ["Cards",r=>cardsOfRoom(r.id).length],["Updated",r=>ago(r.updated_at)]],
     text:r=>[r.id,r.room_number,r.guest_name,r.departure,r.status].join(" "),
-    sort:(a,b)=>String(a.room_number).localeCompare(b.room_number,undefined,{numeric:true}),
+    sort:byRoom,
     unique:(v,rec)=>DB.rooms.some(r=>r!==rec&&String(r.room_number??"").trim().toLowerCase()===String(v.room_number).trim().toLowerCase())&&`Room ${v.room_number} already exists`,
     del(r){ return {warn:`${storagesOfRoom(r.id).length} storage(s) and ${cardsOfRoom(r.id).length} card(s) will be unlinked from this room.`,
       run(){ storagesOfRoom(r.id).forEach(s=>{ s.room_id=null; s.updated_at=now(); }); cardsOfRoom(r.id).forEach(c=>{ c.room_id=null; c.updated_at=now(); });

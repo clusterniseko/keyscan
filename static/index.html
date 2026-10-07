@@ -439,6 +439,10 @@ const eqOf   = id => DB.equipment.filter(e=>e.storage_id===id);
 const eqCount= id => eqOf(id).reduce((a,e)=>a+(+e.quantity||0),0);
 const storagesOfRoom = id => DB.storages.filter(s=>s.room_id===id);
 
+/* Room order everywhere: rooms with a storage first, then rooms with only key
+   cards, then empty rooms — each group by room number. */
+const roomRank = r => storagesOfRoom(r.id).length ? 0 : cardsOfRoom(r.id).length ? 1 : 2;
+const byRoom = (a,b) => roomRank(a)-roomRank(b) || String(a.room_number??"").localeCompare(String(b.room_number??""),undefined,{numeric:true});
 /* a checked-out room has no guest — the name only lives on in the history */
 const guestOf = r => r && r.status!=="checked_out" ? (r.guest_name||"") : "";
 function normCode(s){ return String(s??"").toUpperCase().replace(/[^A-Z0-9]/g,""); }
@@ -1354,7 +1358,7 @@ function storageRow(s){
     <span class="chip s-${esc(s.status)}"><i class="dot"></i>${esc(st.label)}</span><span class="arr">›</span></button>`;
 }
 VIEWS.rooms = (p={}) => {
-  const all=[...DB.rooms].sort((a,b)=>String(a.room_number??"").localeCompare(String(b.room_number??""),undefined,{numeric:true}));
+  const all=[...DB.rooms].sort(byRoom);
   const live = r => r.status!=="checked_out" || storagesOfRoom(r.id).length || cardsOfRoom(r.id).length;
   const active = all.filter(live), rows = p.all ? all : active, hidden = all.length-active.length;
   return {title:"Rooms", sub:active.length+" in use"+(p.all&&hidden?` · ${hidden} checked out`:""),
@@ -1535,7 +1539,7 @@ function searchHTML(q){
   if(!q) return `<div class="empty"><span class="ic">🔎</span>Type a room, storage, card code, guest name, item or status.</div>`;
   const L=q.toLowerCase(), N=normCode(q), out=[];
   const cards=N.length>2?DB.cards.filter(c=>normCode(c.card_code).includes(N)):[];
-  const rooms=DB.rooms.filter(r=>String(r.room_number??"").toLowerCase().includes(L)||guestOf(r).toLowerCase().includes(L));
+  const rooms=DB.rooms.filter(r=>String(r.room_number??"").toLowerCase().includes(L)||guestOf(r).toLowerCase().includes(L)).sort(byRoom);
   const sts=DB.storages.filter(s=>String(s.storage_number??"").toLowerCase().includes(L)||(N&&normCode(s.storage_number).includes(N))||stInfo(s.status).label.toLowerCase().includes(L)
     ||eqOf(s.id).some(e=>catInfo(e.category).label.toLowerCase().includes(L)||(e.type||"").toLowerCase().includes(L)));
   if(cards.length) out.push(`<h2 class="sec">Key cards · ${cards.length}</h2><div class="list">${cards.map(c=>`
