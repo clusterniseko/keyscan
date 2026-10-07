@@ -311,6 +311,7 @@ def init_db():
             cur.execute("""INSERT INTO users (id, name, email, role, shared, created_at, updated_at, pin_hash)
                            VALUES (%s, 'Staff', '', 'staff', 'staff', %s, %s, %s)""",
                         (new_id() + 1, now, now, generate_password_hash(pin) if re.fullmatch(r"\d{4}", pin) else None))
+        tidy_hall(cur)                                    # clean up rooms left over by older versions
         if meta_get(cur, "layout_seeded") is None:
             cur.execute("SELECT count(*) AS n FROM storages")
             if cur.fetchone()["n"] == 0:
@@ -339,6 +340,30 @@ def create_layout(cur):
         rows.append((base + i, vals, {}))
     insert_rows(cur, "storages", rows, "insert")
     return len(rows)
+
+
+def tidy_hall(cur, room_ids=None):
+    """Keeps check-outs clean no matter which device (or which old cached version
+    of the app) made the change. History is never touched, so names and card codes
+    stay in the audit trail.
+      * a released key card points to no room and no storage (last_* keeps the trace)
+      * a checked-out room carries no guest name and no departure date
+      * a room left with no storage and no key card is checked out — only the rooms
+        given (those the last push unlinked something from), or every room when None
+    """
+    cur.execute("""UPDATE cards SET last_room_id = COALESCE(room_id, last_room_id),
+                                     last_storage_id = COALESCE(storage_id, last_storage_id),
+                                     room_id = NULL, storage_id = NULL, updated_at = now()
+                    WHERE status = 'released' AND (room_id IS NOT NULL OR storage_id IS NOT NULL)""")
+    if room_ids is None or room_ids:
+        cur.execute(f"""UPDATE rooms r SET status = 'checked_out', updated_at = now()
+                         WHERE r.status IS DISTINCT FROM 'checked_out'
+                           AND NOT EXISTS (SELECT 1 FROM storages s WHERE s.room_id = r.id)
+                           AND NOT EXISTS (SELECT 1 FROM cards c WHERE c.room_id = r.id)
+                           {"" if room_ids is None else "AND r.id = ANY(%s)"}""",
+                    () if room_ids is None else (list(room_ids),))
+    cur.execute("""UPDATE rooms SET guest_name = NULL, departure = NULL, updated_at = now()
+                    WHERE status = 'checked_out' AND (COALESCE(guest_name, '') <> '' OR departure IS NOT NULL)""")
 
 
 def meta_get(cur, key):
@@ -720,6 +745,15 @@ def sync_post(cur, u):
     if conflicts:
         raise ApiError(409, "Another device changed the same records", reason="conflict", ids=conflicts[:20])
 
+    # rooms that cards / storages in this push were linked to before it: if the push
+    # leaves one of them with no storage and no card, the server checks it out
+    freed = set()
+    for t in ("cards", "storages"):
+        ids = [valid_id(r["id"]) for r in plan[t][0]] + [valid_id(d["id"]) for d in plan[t][1]]
+        if ids:
+            cur.execute(f"SELECT room_id FROM {t} WHERE id = ANY(%s) AND room_id IS NOT NULL", (ids,))
+            freed.update(r["room_id"] for r in cur.fetchall())
+
     # 2. apply: upserts parents-first, deletes children-first (FKs are deferred anyway)
     for t in TABLES:
         rows = plan[t][0]
@@ -750,6 +784,7 @@ def sync_post(cur, u):
             cur.execute("DELETE FROM users WHERE id = ANY(%s) AND shared IS NULL", (ids,))
         else:
             cur.execute(f"DELETE FROM {t} WHERE id = ANY(%s)", (ids,))
+    tidy_hall(cur, freed)
     cur.execute("SET CONSTRAINTS ALL IMMEDIATE")           # surface FK / unique problems as 409 now
     return jsonify(pull(cur, since, b.get("epoch"), admin))
 
