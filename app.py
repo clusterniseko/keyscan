@@ -18,6 +18,8 @@ Sync protocol (see static/sync.js)
   * `epoch` changes on bulk operations (restore, import, clear history); a
     client with an old epoch gets a full reload.
 """
+import base64
+import binascii
 import datetime as dt
 import json
 import math
@@ -33,7 +35,7 @@ import psycopg2
 import psycopg2.errors
 import psycopg2.extras
 import psycopg2.pool
-from flask import Flask, jsonify, request, send_from_directory, session
+from flask import Flask, Response, jsonify, request, send_from_directory, session
 from psycopg2.extras import Json
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -51,6 +53,9 @@ HISTORY_LIMIT = int(os.environ.get("HISTORY_LIMIT", "5000"))      # history rows
 ANALYTICS_MAX_ROWS = int(os.environ.get("ANALYTICS_MAX_ROWS", "200000"))   # safety cap for /api/admin/analytics
 HISTORY_DAY_MAX = int(os.environ.get("HISTORY_DAY_MAX", "20000"))            # safety cap for /api/admin/history
 MAX_SNAPSHOTS = 15
+PHOTO_MAX_BYTES = int(os.environ.get("PHOTO_MAX_BYTES", str(3 * 1024 * 1024)))   # one equipment photo
+PHOTO_KEEP_DAYS = int(os.environ.get("PHOTO_KEEP_DAYS", "90"))   # photos no stored item uses any more
+PHOTO_TYPES = {"image/jpeg", "image/png", "image/webp"}
 LOGIN_MAX_FAILS = 10                                              # per IP, per 10 minutes
 WRITE_LOCK = 734001                                               # pg advisory lock key
 
@@ -61,16 +66,30 @@ LEGACY_ADMIN_HASH = ("pbkdf2:sha256:260000$IrBfOswUM7KwcPJZ$"
 
 # Default hall layout (the storage map). Created automatically on the first
 # start while there are no storages, and restorable from Hall setup / Storage map.
+# Each area holds one kind of equipment; at check-in every item (a pair of boots,
+# skis with their poles, a snowboard) gets its own free location of its kind.
+#   (area, kind, prefix, first number, last number)
+# kind: boots | ski | ski_kids | snowboard | vip
+# Areas as on the floor plan (drawn in static/index.html, HALL_PLAN — keep the names in step):
+#   top row:    Boots 1 · Boots 2 · Snowboard · Ski 1        right wall: Ski 2
+#   bottom row: Boots 3 | door | Boots 4 | door | VIP · Ski Kids | door
+# The numbers per area are placeholders until the real counts are known.
 HALL_LAYOUT = [
-    ("Area A · Main Hall", "S-", 101, 112),
-    ("Area B · Ski Wall", "S-", 120, 131),
-    ("Area C · Boot Room", "S-", 201, 208),
+    ("Boots 1", "boots", "B1-", 1, 20),
+    ("Boots 2", "boots", "B2-", 1, 20),
+    ("Boots 3", "boots", "B3-", 1, 20),
+    ("Boots 4", "boots", "B4-", 1, 20),
+    ("Snowboard", "snowboard", "SB-", 1, 20),
+    ("Ski 1", "ski", "S1-", 1, 20),
+    ("Ski 2", "ski", "S2-", 1, 20),
+    ("Ski Kids", "ski_kids", "SK-", 1, 20),
+    ("VIP", "vip", "V-", 1, 10),
 ]
 
 
 def layout_rows():
-    return [{"storage_number": f"{pfx}{n}", "section": area}
-            for area, pfx, a, b in HALL_LAYOUT for n in range(a, b + 1)]
+    return [{"storage_number": f"{pfx}{n:02d}", "section": area, "kind": kind}
+            for area, kind, pfx, a, b in HALL_LAYOUT for n in range(a, b + 1)]
 
 
 # --------------------------------------------------------------------------
@@ -256,6 +275,8 @@ def ddl():
              label text NOT NULL, by_name text, data jsonb NOT NULL)""",
         "CREATE TABLE IF NOT EXISTS login_failures (ip text NOT NULL, at timestamptz NOT NULL DEFAULT now())",
         "CREATE INDEX IF NOT EXISTS login_failures_ip_at ON login_failures (ip, at)",
+        """CREATE TABLE IF NOT EXISTS photos (id bigint PRIMARY KEY, created_at timestamptz NOT NULL DEFAULT now(),
+             created_by bigint, mime text NOT NULL, data bytea NOT NULL)""",
         """CREATE OR REPLACE FUNCTION sv_bump_rev() RETURNS trigger LANGUAGE plpgsql AS $$
            BEGIN NEW.rev := nextval('rev_seq'); RETURN NEW; END $$""",
         """CREATE OR REPLACE FUNCTION sv_tombstone() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -337,7 +358,7 @@ def create_layout(cur):
         vals = {c: None for c, _ in SCHEMA["storages"]}
         vals.update(storage_number=r["storage_number"], section=r["section"], status="available",
                     created_at=now, updated_at=now)
-        rows.append((base + i, vals, {}))
+        rows.append((base + i, vals, {"kind": r["kind"]}))
     insert_rows(cur, "storages", rows, "insert")
     return len(rows)
 
@@ -490,7 +511,7 @@ def _headers(resp):
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "same-origin"
     resp.headers["X-Frame-Options"] = "DENY"
-    if request.path.startswith("/api/"):
+    if request.path.startswith("/api/") and "Cache-Control" not in resp.headers:
         resp.headers["Cache-Control"] = "no-store"
     return resp
 
@@ -787,6 +808,43 @@ def sync_post(cur, u):
     tidy_hall(cur, freed)
     cur.execute("SET CONSTRAINTS ALL IMMEDIATE")           # surface FK / unique problems as 409 now
     return jsonify(pull(cur, since, b.get("epoch"), admin))
+
+
+# ---------------- equipment photos ----------------
+# Photos are kept out of the sync payload: an equipment row only carries the
+# photo's id (photo_id, in its extra), the image itself is fetched on demand.
+@app.post("/api/photos")
+@auth()
+def photo_upload(cur, u):
+    m = re.fullmatch(r"data:([\w/+.-]+);base64,(.+)", str(body().get("data") or ""), re.S)
+    if not m or m.group(1) not in PHOTO_TYPES:
+        raise ApiError(400, "Send the photo as a JPEG, PNG or WebP data URL")
+    try:
+        raw = base64.b64decode(m.group(2), validate=True)
+    except (binascii.Error, ValueError):
+        raise ApiError(400, "The photo could not be read")
+    if not raw or len(raw) > PHOTO_MAX_BYTES:
+        raise ApiError(400, f"The photo must be under {PHOTO_MAX_BYTES // (1024 * 1024)} MB")
+    pid = new_id()
+    cur.execute("INSERT INTO photos (id, created_by, mime, data) VALUES (%s, %s, %s, %s)",
+                (pid, u["id"], m.group(1), psycopg2.Binary(raw)))
+    # old photos no stored item points to any more (the guest has left)
+    cur.execute("""DELETE FROM photos p WHERE p.created_at < now() - make_interval(days => %s)
+                     AND NOT EXISTS (SELECT 1 FROM equipment e WHERE e.extra->>'photo_id' = p.id::text)""",
+                (PHOTO_KEEP_DAYS,))
+    return jsonify(id=pid)
+
+
+@app.get("/api/photos/<int:pid>")
+@auth()
+def photo_get(cur, u, pid):
+    cur.execute("SELECT mime, data FROM photos WHERE id = %s", (pid,))
+    r = cur.fetchone()
+    if not r:
+        raise ApiError(404, "Photo not found")
+    resp = Response(bytes(r["data"]), mimetype=r["mime"])
+    resp.headers["Cache-Control"] = "private, max-age=604800, immutable"   # a photo never changes
+    return resp
 
 
 # ---------------- admin data tools ----------------
