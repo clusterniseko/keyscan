@@ -768,8 +768,11 @@ VIEWS.dash = () => {
     <div class="panel" style="margin-top:12px;border-color:var(--signal)">
       <div class="eyebrow" style="color:var(--signal)">First run</div>
       <b class="num" style="font-size:24px;display:block;margin:4px 0 6px">The hall is empty</b>
-      <p class="muted tiny" style="margin:0 0 12px">Scan a card and type any storage number to create it on the spot, or define the whole rack layout first.</p>
-      <button class="btn" data-act="nav" data-view="setup">Set up storage locations</button>
+      <p class="muted tiny" style="margin:0 0 12px">${SESSION.role==="admin"
+        ?"Create the storage areas of the floor plan: Boots 1–4, Snowboard, Ski 1–2, Ski Kids and VIP."
+        :"An admin has to create the storage areas first (Hall setup)."}</p>
+      ${SESSION.role==="admin"&&SkiSync.missingLayout(DB).length?`<button class="btn primary" data-act="load-layout">Create storage areas</button>`:""}
+      <button class="btn ghost" style="margin-top:8px" data-act="nav" data-view="setup">Hall setup</button>
     </div>`}
 
     <h2 class="sec">Hall status</h2>
@@ -788,7 +791,7 @@ VIEWS.dash = () => {
     <div class="actions">
       ${A("rooms","🚪","Search room","By room number")}
       ${A("storages","🏷️","Search storage","All locations")}
-      ${A("checkin","⬇️","Check in","Store equipment")}
+      ${A("stow","⬇️","Check in","Room number or key card")}
       ${A("checkout","⬆️","Check out","Release to guest")}
       ${A("map","🗺️","Storage map","Hall layout")}
       ${A("active","🎿","Active storage","In use now")}
@@ -1155,7 +1158,9 @@ VIEWS.stow = (p) => {
     <div class="hint">One line per item: a pair of boots, a pair of skis with their poles, one snowboard. Each goes to its own location.</div>
     <div class="btn-grid one" style="margin-top:18px">
       <button class="btn go" data-act="ci-save" id="ciSave">Check in</button>
-      ${r?"":`<button class="btn ghost" data-act="scan" data-ctx="checkin">Scan a key card instead</button>`}
+      ${r?"":`<button class="btn ghost" data-act="scan" data-ctx="checkin">Have the key card? Scan it</button>`}
+    </div>
+    <div class="hint">${r?"":"The key card is optional — add it later from the room page whenever the guest has it."}
     </div>
     <h2 class="sec">Free locations</h2>
     ${kindsBar()}`,
@@ -1631,7 +1636,7 @@ VIEWS.room = (p) => {
       ||`<div class="empty"><span class="ic">🎿</span>Nothing checked in for this room.</div>`}
 
     <h2 class="sec">Key cards · ${cards.length}</h2>
-    <div class="pill-list">${cards.map(c=>`<span class="pill">${esc(c.card_code)}<button class="x" data-act="unlink-card" data-id="${c.id}">✕</button></span>`).join("")||`<span class="muted">None yet.</span>`}</div>
+    <div class="pill-list">${cards.map(c=>`<span class="pill">${esc(c.card_code)}<button class="x" data-act="unlink-card" data-id="${c.id}">✕</button></span>`).join("")||`<span class="muted">None yet — checked in by room number. Add the card whenever the guest has it.</span>`}</div>
     <button class="btn" style="margin-top:10px" data-act="scan" data-ctx="add_card" data-room="${r.id}" data-storage="${sts[0]?sts[0].id:""}">+ Add key card</button>
     <h2 class="sec">Room history</h2>
     <div class="hist">${DB.history.filter(h=>h.room_id===r.id).slice(0,8).map(histEvent).join("")||`<div class="muted">Nothing logged yet.</div>`}</div>`,
