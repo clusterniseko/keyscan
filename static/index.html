@@ -433,6 +433,37 @@ const CATS = {
 const STORED = ["boots","skis","snowboard"];
 /* Every area of the hall holds one kind of equipment. Each item gets its own location. */
 const KINDS = {boots:"Boots", ski:"Ski", ski_kids:"Ski kids", snowboard:"Snowboard", vip:"VIP"};
+/* The hall as drawn on the floor plan (viewBox 100 × 54). Keyed by area name: an
+   area renamed in Hall setup simply drops off the drawing, nothing breaks. */
+const HALL_PLAN = {
+  "Boots 1":  {x:2,  y:4,  w:28, h:10, where:"top row, left"},
+  "Boots 2":  {x:33, y:4,  w:17, h:10, where:"top row, middle"},
+  "Snowboard":{x:53, y:4,  w:14, h:10, where:"top row, right"},
+  "Ski 1":    {x:68, y:4,  w:9,  h:10, where:"top row, next to Snowboard"},
+  "Ski 2":    {x:84, y:4,  w:9,  h:44, where:"right wall"},
+  "Boots 3":  {x:2,  y:38, w:26, h:10, where:"bottom row, left"},
+  "Boots 4":  {x:33, y:38, w:11, h:10, where:"bottom row, between the doors"},
+  "VIP":      {x:49, y:38, w:9,  h:10, where:"bottom row, after the 2nd door"},
+  "Ski Kids": {x:58, y:38, w:18, h:10, where:"bottom row, right"}
+};
+const DOORS = [[28,5],[44,5],[76,6]];          // gaps in the bottom row: [x, width]
+const whereOf = s => HALL_PLAN[s && s.section] ? HALL_PLAN[s.section].where : "";
+/* mini floor plan: every area with its free count; mark = area names to highlight */
+function hallPlan(mark){
+  const areas=Object.keys(HALL_PLAN).filter(a=>DB.storages.some(s=>s.section===a));
+  if(!areas.length) return "";
+  const hi=new Set(mark||[]);
+  return `<svg viewBox="0 0 100 54" role="img" aria-label="Hall plan" style="width:100%;display:block;background:var(--slab);border:1px solid var(--line);border-radius:14px">
+    ${DOORS.map(([x,w])=>`<rect x="${x}" y="47" width="${w}" height="2" fill="var(--signal)" opacity=".7"/><text x="${x+w/2}" y="53" text-anchor="middle" font-size="2.6" fill="var(--dim)">DOOR</text>`).join("")}
+    ${areas.map(a=>{ const p=HALL_PLAN[a], rows=DB.storages.filter(s=>s.section===a), f=rows.filter(isFree).length, on=hi.has(a);
+      const cx=p.x+p.w/2, cy=p.y+p.h/2, tall=p.h>p.w*2, room=tall?p.h:p.w;
+      const fs=Math.min(3,room/a.length*1.6), free=room<16?`${f}/${rows.length}`:`${f}/${rows.length} free`;
+      return `<g data-act="plan-area" data-area="${esc(a)}" style="cursor:pointer">
+        <rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" rx="1.5" fill="${on?"rgba(255,106,43,.35)":"var(--slab2)"}" stroke="${on?"var(--signal)":f?"var(--line)":"var(--st-attention)"}" stroke-width="${on?.8:.4}"/>
+        <text x="${cx}" y="${cy-(tall?2:.6)}" text-anchor="middle" font-size="${fs.toFixed(2)}" font-weight="700" fill="var(--frost)" ${tall?`transform="rotate(-90 ${cx} ${cy-2})"`:""}>${esc(a)}</text>
+        <text x="${cx}" y="${cy+(tall?8:3.6)}" text-anchor="middle" font-size="2.6" fill="${f?"var(--mist)":"#FF8080"}">${free}</text></g>`; }).join("")}
+  </svg>`;
+}
 let DB = null, SESSION = null, nav = [], scanCtx = null;
 
 /* ids are unique across devices (clock + random, see sync.js) */
@@ -1238,8 +1269,9 @@ async function stowSave(){
   openSheet(`<h3>Checked in · Room ${esc(r.room_number)}</h3>
     <p class="sub">Put each item in its location:</p>
     ${placed.map(([e,s])=>`<div class="eq"><div class="ic">${catInfo(e.category).ic}</div>
-      <div class="body"><b>${esc(eqLabel(e))}</b><small>${esc([e.size,e.type].filter(Boolean).join(" · ")||s.section||"")}</small></div>
+      <div class="body"><b>${esc(eqLabel(e))}</b><small>${esc([s.section,whereOf(s)].filter(Boolean).join(" · "))}</small></div>
       <span class="tag sm">${esc(s.storage_number)}</span></div>`).join("")}
+    <div style="margin-top:12px">${hallPlan(placed.map(([,s])=>s.section))}</div>
     <div class="btn-grid" style="margin-top:14px">
       <button class="btn" data-act="scan" data-ctx="add_card" data-room="${r.id}" data-storage="${first?first.id:""}">+ Key card</button>
       <button class="btn primary" data-act="close-sheet">Done</button></div>`);
@@ -1272,6 +1304,7 @@ VIEWS.storage = (p) => {
       <div style="margin-top:14px">
         <div class="kv"><span>Room</span><b>${r?`<button data-act="nav" data-view="room" data-id="${r.id}" style="font:inherit;color:inherit;padding:0;text-decoration:underline">${esc(r.room_number)}</button>${r.vip?" · VIP":""}`:"Not assigned"}</b></div>
         <div class="kv"><span>Guest</span><b>${guestOf(r)?esc(guestOf(r)):"—"}</b></div>
+        ${whereOf(s)?`<div class="kv"><span>Where</span><b>${esc(s.section)} · ${esc(whereOf(s))}</b></div>`:""}
         <div class="kv"><span>Key cards</span><b>${cards.length}</b></div>
         <div class="kv"><span>Equipment</span><b>${items} item${items===1?"":"s"}</b></div>
         <div class="kv"><span>Updated</span><b>${ago(s.updated_at)}</b></div>
@@ -1735,9 +1768,10 @@ VIEWS.map = () => {
     body:`<div class="empty"><span class="ic">🗺️</span>No locations to draw yet.</div>
       <button class="btn primary" data-act="nav" data-view="setup">Set up storage locations</button>`};
   return {title:"Storage map", sub:"Physical hall layout",
-  body:`<div class="legend">${Object.entries(STATUS).map(([k,v])=>`<span><i style="background:${v.c}"></i>${v.label}</span>`).join("")}</div>
+  body:`${hallPlan()?`<div style="margin-bottom:14px">${hallPlan()}</div><div class="hint" style="margin:-6px 0 14px">Tap an area to jump to its locations.</div>`:""}
+    <div class="legend">${Object.entries(STATUS).map(([k,v])=>`<span><i style="background:${v.c}"></i>${v.label}</span>`).join("")}</div>
     ${sections.map(sec=>{ const rows=DB.storages.filter(s=>(s.section||"Unassigned area")===sec), k=rows.map(kindOf).find(Boolean);
-      return `<div class="map-area"><h2 class="sec">${esc(sec)}${k&&KINDS[k]!==sec?` · ${esc(KINDS[k])}`:""} · ${rows.filter(isFree).length} free</h2>
+      return `<div class="map-area" id="area-${esc(normCode(sec))}"><h2 class="sec">${esc(sec)}${k&&KINDS[k]!==sec?` · ${esc(KINDS[k])}`:""} · ${rows.filter(isFree).length} free</h2>
       <div class="map-grid">${DB.storages.filter(s=>(s.section||"Unassigned area")===sec).sort((a,b)=>String(a.storage_number).localeCompare(String(b.storage_number),undefined,{numeric:true})).map(s=>`
         <button class="cell on" style="--c:${stInfo(s.status).c}" data-act="nav" data-view="storage" data-id="${s.id}">
           <span class="n">${esc(s.storage_number)}</span>
@@ -2056,6 +2090,8 @@ document.addEventListener("click", e=>{
     case "save-card": saveNewCard(el.dataset.code, el.dataset.next); break;
     /* equipment */
     case "add-eq": openEqSheet(id); break;
+    case "plan-area": { const t=document.getElementById("area-"+normCode(el.dataset.area));
+      if(t) t.scrollIntoView({behavior:"smooth",block:"start"}); else go("map",{}); break; }
     case "eq-edit": { const eq=DB.equipment.find(x=>x.id===id); if(eq) openEqSheet(eq.storage_id,eq.id); break; }
     case "photo": openPhoto(el.dataset.id,el.dataset.c); break;
     case "eq-save": saveEq(el.dataset.storage, el.dataset.id?+el.dataset.id:null); break;

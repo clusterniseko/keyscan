@@ -70,6 +70,10 @@ LEGACY_ADMIN_HASH = ("pbkdf2:sha256:260000$IrBfOswUM7KwcPJZ$"
 # skis with their poles, a snowboard) gets its own free location of its kind.
 #   (area, kind, prefix, first number, last number)
 # kind: boots | ski | ski_kids | snowboard | vip
+# Areas as on the floor plan (drawn in static/index.html, HALL_PLAN — keep the names in step):
+#   top row:    Boots 1 · Boots 2 · Snowboard · Ski 1        right wall: Ski 2
+#   bottom row: Boots 3 | door | Boots 4 | door | VIP · Ski Kids | door
+# The numbers per area are placeholders until the real counts are known.
 HALL_LAYOUT = [
     ("Boots 1", "boots", "B1-", 1, 20),
     ("Boots 2", "boots", "B2-", 1, 20),

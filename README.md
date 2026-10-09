@@ -34,7 +34,15 @@ Si no defines `SECRET_KEY`, se genera una y se guarda en la base de datos.
 2. Cuenta → **Access & staff**: pon el PIN del personal y añade los nombres.
 3. El mapa de ubicaciones ya viene creado (vacío), una zona por tipo de equipo:
    Boots 1–4 (`B1-01`…), Snowboard (`SB-`), Ski 1–2 (`S1-`, `S2-`), Ski Kids (`SK-`) y VIP (`V-`).
-   La numeración está en `HALL_LAYOUT`, al principio de `app.py`. Si borras alguna, **Hall setup** (app)
+   Están colocadas como en el plano del guardaesquís:
+   ```
+   [ Boots 1 ] [ Boots 2 ] [ Snowboard | Ski 1 ]      ┃ Ski 2
+                                                     ┃ (pared derecha)
+   [ Boots 3 ] door [ Boots 4 ] door [ VIP | Ski Kids ] door
+   ```
+   La numeración está en `HALL_LAYOUT`, al principio de `app.py` (por ahora 20 por zona, 10 en VIP).
+   El dibujo del plano que muestra la app está en `HALL_PLAN` (`static/index.html`); usa los mismos
+   nombres de zona, así que si renombras una zona hay que cambiarlo también allí. Si borras alguna, **Hall setup** (app)
    o **Storage map** (/admin) muestran *Restore default layout* para volver a crear las que falten.
 4. Los valets entran con el PIN y tocan su nombre.
 
