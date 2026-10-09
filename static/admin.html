@@ -258,10 +258,15 @@ const STATUS = {
 };
 const CARD_STATUS = {active:"Active", released:"Released"};
 const ROOM_STATUS = {staying:"Staying", checked_out:"Checked out"};
+/* only boots, skis (with poles) and snowboards are stored now; the rest is for older records */
 const CATS = {
-  skis:"Skis", boots:"Ski boots", poles:"Poles", snowboard:"Snowboard",
+  boots:"Boots", skis:"Skis + poles", snowboard:"Snowboard", poles:"Poles",
   sbboots:"Snowboard boots", helmet:"Helmet", goggles:"Goggles", other:"Other"
 };
+/* what each area holds (same list as the valet app) */
+const KINDS = {boots:"Boots", ski:"Ski", ski_kids:"Ski kids", snowboard:"Snowboard", vip:"VIP"};
+const photoUrl = id => "/api/photos/"+encodeURIComponent(id);
+const photoImg = id => id?`<a href="${photoUrl(id)}" target="_blank" rel="noopener"><img src="${photoUrl(id)}" alt="Equipment photo" loading="lazy" style="width:100%;max-width:360px;border-radius:10px;display:block;margin:6px 0 12px"></a>`:"";
 const EQ_STATUS = {stored:"Stored"};
 const COLLECTIONS = ["rooms","storages","cards","equipment","users","history"];
 
@@ -526,7 +531,7 @@ function traceStorage(s, why){
       <span class="arrow">→</span>
       <div class="node"><small>Storage · ${esc(s.section||"")}</small><b>${esc(s.storage_number)}</b> ${chip(s.status,STATUS[s.status]||s.status)}</div>
       <span class="arrow">→</span>
-      <div class="node"><small>Equipment</small><b>${eq.length?eq.map(e=>`${esc(CATS[e.category]||e.category)} ×${esc(e.quantity)}`).join(", "):"empty"}</b></div>
+      <div class="node"><small>Equipment</small><b>${eq.length?eq.map(e=>`${esc(CATS[e.category]||e.category)} ×${esc(e.quantity)}${e.photo_id?` <a href="${photoUrl(e.photo_id)}" target="_blank" rel="noopener" title="Photo">📷</a>`:""}`).join(", "):"empty"}</b></div>
     </div>
     ${roomCards.length?`<div class="issue"><div class="grow"><b>Room cards not linked to this storage</b>
       <p>${roomCards.map(c=>`${esc(c.card_code)} → ${c.storage_id?esc(stor(c.storage_id)?.storage_number||"deleted #"+c.storage_id):"no storage"}`).join(" · ")}</p></div>
@@ -561,8 +566,8 @@ function openDetail(col,id){
   } else if(col==="equipment"){
     const st=stor(rec.storage_id);
     title=(CATS[rec.category]||rec.category)+" ×"+rec.quantity; sub=[rec.size,rec.type,rec.description].filter(Boolean).map(esc).join(" · ")||"No size or type";
-    body=st?traceStorage(st,"Stored in "+st.storage_number)
-      :`<div class="issue hot"><div class="grow"><b>Orphan item</b><p>Its storage #${esc(rec.storage_id)} no longer exists.</p></div></div>`;
+    body=photoImg(rec.photo_id)+(st?traceStorage(st,"Stored in "+st.storage_number)
+      :`<div class="issue hot"><div class="grow"><b>Orphan item</b><p>Its storage #${esc(rec.storage_id)} no longer exists.</p></div></div>`);
   } else if(col==="users"){
     const mine=DB.history.filter(h=>h.user_id===rec.id);
     title=rec.name; sub=`${rec.shared?(rec.shared==="admin"?"Admin login":"Shared staff account"):rec.archived?"Removed staff member":"Staff member"} · ${mine.length} actions`;
@@ -666,9 +671,10 @@ const SCHEMA = {
     fields:[
       {k:"storage_number",l:"Storage number",req:true,upper:true},
       {k:"section",l:"Area / section",def:"Unassigned area",list:()=>[...new Set(DB.storages.map(s=>s.section).filter(Boolean))]},
+      {k:"kind",l:"Holds",type:"select",opts:()=>[{v:"",l:"Not set (read from the area name)"},...opt(KINDS)],def:""},
       {k:"status",l:"Status",type:"select",opts:()=>opt(STATUS),def:"available"},
       {k:"room_id",l:"Room",type:"select",opts:roomOpts,num:true}],
-    cols:[["Storage",s=>`<b>${esc(s.storage_number)}</b>`],["Area",s=>esc(s.section||"—")],["Status",s=>chip(s.status,STATUS[s.status]||s.status)],
+    cols:[["Storage",s=>`<b>${esc(s.storage_number)}</b>`],["Area",s=>esc(s.section||"—")],["Holds",s=>esc(KINDS[s.kind]||"—")],["Status",s=>chip(s.status,STATUS[s.status]||s.status)],
       ["Room",s=>roomLabel(s.room_id)],["Items",s=>eqCount(s.id)],["Cards",s=>cardsOfStorage(s.id).map(c=>`<span class="mono tiny">${esc(c.card_code)}</span>`).join("<br>")||`<span class="dim">—</span>`],
       ["Updated",s=>ago(s.updated_at)]],
     text:s=>[s.id,s.storage_number,s.section,s.status,STATUS[s.status],room(s.room_id)?.room_number].join(" "),
@@ -706,7 +712,7 @@ const SCHEMA = {
       {k:"size",l:"Size"},
       {k:"type",l:"Type / brand"},
       {k:"description",l:"Description"}],
-    cols:[["#",e=>`<span class="dim">${e.id}</span>`],["Item",e=>`<b>${esc(CATS[e.category]||e.category)}</b>`],["Qty",e=>esc(e.quantity)],
+    cols:[["#",e=>`<span class="dim">${e.id}</span>`],["Item",e=>`<b>${esc(CATS[e.category]||e.category)}</b>${e.kids?" (kids)":""}${e.photo_id?" 📷":""}`],["Qty",e=>esc(e.quantity)],
       ["Size",e=>esc(e.size||"—")],["Type",e=>esc([e.type,e.description].filter(Boolean).join(" · ")||"—")],
       ["Storage",e=>storLabel(e.storage_id)],["Room",e=>roomLabel(stor(e.storage_id)?.room_id)],["Updated",e=>ago(e.updated_at)]],
     text:e=>[e.id,CATS[e.category],e.category,e.size,e.type,e.description,stor(e.storage_id)?.storage_number,room(stor(e.storage_id)?.room_id)?.room_number].join(" "),
@@ -762,12 +768,12 @@ V.map = () => {
     <div class="toolbar">
       <button class="btn primary" data-act="map-range">+ Add range</button>
       <button class="btn" data-act="map-new">+ New storage</button>
-      ${SkiSync.missingLayout(DB).length?`<button class="btn" data-act="load-layout" title="Main Hall S-101–112 · Ski Wall S-120–131 · Boot Room S-201–208">Restore default layout (${SkiSync.missingLayout(DB).length} missing)</button>`:""}
+      ${SkiSync.missingLayout(DB).length?`<button class="btn" data-act="load-layout" title="${esc([...new Set(SkiSync.missingLayout(DB).map(x=>x.section))].join(" · "))}">Restore default layout (${SkiSync.missingLayout(DB).length} missing)</button>`:""}
     </div>
     <div class="legend">${Object.entries(STATUS).map(([k,l])=>`<span><i style="background:${STC(k)}"></i>${esc(l)}</span>`).join("")}</div>
     ${areas.length?areas.map(a=>{ const rows=sorted(a), free=rows.filter(s=>!busy(s)).length;
       return `<div class="map-area">
-        <div class="map-head"><h3>${esc(a)}</h3><span class="dim tiny">${rows.length} locations · ${rows.length-free} in use</span><span class="grow"></span>
+        <div class="map-head"><h3>${esc(a)}</h3><span class="dim tiny">${esc(KINDS[(rows.find(s=>KINDS[s.kind])||{}).kind]||"type not set")} · ${rows.length} locations · ${rows.length-free} in use</span><span class="grow"></span>
           <button class="btn sm" data-act="map-rename" data-area="${esc(a)}">Rename</button>
           ${free?`<button class="btn sm danger" data-act="map-drop-free" data-area="${esc(a)}">Delete ${free} free</button>`:""}</div>
         <div class="map-grid">${rows.map(s=>`<button class="cell" style="--c:${STC(s.status)}" data-act="map-cell" data-id="${s.id}" title="${esc(STATUS[s.status]||s.status)}">
@@ -784,6 +790,7 @@ function mapCell(id){
     <p class="sub">${esc(areaOf(s))} · ${chip(s.status,STATUS[s.status]||s.status)} · ${room(s.room_id)?"Room "+esc(room(s.room_id).room_number):"no room"}</p>
     <div class="panel tiny">
       <div class="row"><span class="grow muted">Equipment</span><b>${eq.length?eq.map(e=>`${esc(CATS[e.category]||e.category)} ×${esc(e.quantity)}`).join(", "):"—"}</b></div>
+      ${eq.filter(e=>e.photo_id).map(e=>photoImg(e.photo_id)).join("")}
       <div class="row"><span class="grow muted">Key cards</span><b class="mono">${cs.map(c=>esc(c.card_code)).join(", ")||"—"}</b></div>
       <div class="row"><span class="grow muted">Updated</span><b>${ago(s.updated_at)}</b></div>
     </div>
@@ -803,6 +810,7 @@ function mapRange(){
   openSheet(`<h3>Add a range</h3><p class="sub">Creates a whole rack row, e.g. S-101 to S-112. Numbers that already exist are skipped.</p>
     <label class="f"><span>Area</span><input class="input" id="mrArea" list="mrAreas" placeholder="Main hall" autocomplete="off">
       <datalist id="mrAreas">${areas.map(a=>`<option value="${esc(a)}">`).join("")}</datalist></label>
+    <label class="f"><span>Holds</span><select class="input" id="mrKind"><option value="">Not set (read from the area name)</option>${Object.entries(KINDS).map(([k,l])=>`<option value="${k}">${esc(l)}</option>`).join("")}</select></label>
     <label class="f"><span>Prefix</span><input class="input" id="mrPfx" value="S-" autocomplete="off"></label>
     <div class="row"><label class="f grow"><span>From</span><input class="input" id="mrFrom" inputmode="numeric" placeholder="101"></label>
       <label class="f grow"><span>To</span><input class="input" id="mrTo" inputmode="numeric" placeholder="112"></label></div>
@@ -810,13 +818,13 @@ function mapRange(){
   setTimeout(()=>$("#mrArea")?.focus(),50);
 }
 function mapRangeGo(){
-  const area=$("#mrArea").value.trim()||"Unassigned area", pfx=$("#mrPfx").value.trim().toUpperCase();
+  const area=$("#mrArea").value.trim()||"Unassigned area", pfx=$("#mrPfx").value.trim().toUpperCase(), kind=$("#mrKind").value;
   const from=parseInt($("#mrFrom").value,10), to=parseInt($("#mrTo").value,10);
   if(isNaN(from)||isNaN(to)||from<0||to<from){ toast("Check the From / To numbers","err"); return; }
   if(to-from>199){ toast("Maximum 200 locations at a time","err"); return; }
   const nums=[]; for(let i=from;i<=to;i++){ const n=pfx+i; if(!DB.storages.some(s=>normCode(s.storage_number)===normCode(n))) nums.push(n); }
   if(!nums.length){ toast("All of those numbers already exist","info"); return; }
-  commit("Storage range created",()=>{ nums.forEach(n=>DB.storages.push({id:nextId(),storage_number:n,section:area,status:"available",room_id:null,created_at:now(),updated_at:now()})); },
+  commit("Storage range created",()=>{ nums.forEach(n=>DB.storages.push({id:nextId(),storage_number:n,section:area,status:"available",room_id:null,created_at:now(),updated_at:now(),...(kind?{kind}:{})})); },
     {action:"Storage range created",notes:`${area}: ${nums[0]} – ${nums[nums.length-1]} (${nums.length})`});
   closeSheet(); toast(nums.length+" locations created");
 }
