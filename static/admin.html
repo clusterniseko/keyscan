@@ -122,6 +122,10 @@ tr.clk{cursor:pointer} tr.clk:hover td{background:rgba(255,255,255,.05)}
 .sheet.wide{max-width:820px}
 td.act{white-space:nowrap;text-align:right}
 td.act .btn+.btn{margin-left:4px}
+td.sel,th.sel{width:34px;padding-right:0;cursor:default}
+td.sel input,th.sel input{width:18px;height:18px;margin:2px 0 0;accent-color:var(--st-attention);cursor:pointer}
+tr.picked td{background:rgba(255,77,77,.08)}
+.bulkbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;padding:8px 12px;border:1px solid var(--st-attention);border-radius:var(--r-s);background:rgba(255,77,77,.07)}
 .warn{color:var(--st-attention)}
 .chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px;font-family:var(--display);font-weight:600;
   text-transform:uppercase;letter-spacing:1px;font-size:12px;background:var(--slab2);border:1px solid var(--line);white-space:nowrap}
@@ -736,24 +740,73 @@ function tableView(col){
         <button class="btn primary" data-act="new" data-col="${col}">+ New ${S.one}</button>
         <button class="btn ghost" data-act="csv" data-col="${col}">CSV</button>
       </div>
-      <div class="tbl-wrap"><table><thead><tr>${S.cols.map(c=>`<th>${c[0]}</th>`).join("")}<th></th></tr></thead><tbody id="tblBody"></tbody></table></div>
+      <div class="bulkbar hidden" id="bulkBar"><b id="bulkN"></b><span class="grow"></span>
+        <button class="btn sm" data-act="sel-clear">Clear selection</button>
+        <button class="btn sm danger" data-act="bulk-del" data-col="${col}">Delete selected</button></div>
+      <div class="tbl-wrap"><table><thead><tr><th class="sel" data-act="noop"><input type="checkbox" id="selAll" aria-label="Select all shown"></th>${S.cols.map(c=>`<th>${c[0]}</th>`).join("")}<th></th></tr></thead><tbody id="tblBody"></tbody></table></div>
       <div class="pager" id="tblPager"></div>`,
     after(){
+      if(SEL.col!==col){ SEL.col=col; SEL.ids.clear(); }
       const draw=()=>{
         const q=$("#tblQ").value.trim().toLowerCase(), f=$("#tblF")?$("#tblF").value:"";
         params.q=$("#tblQ").value; params.f=f;
         const rows=[...DB[col]].filter(r=>(!f||r[S.filter.k]===f)&&(!q||S.text(r).toLowerCase().includes(q))).sort(S.sort);
         const LIM=300;
-        $("#tblBody").innerHTML=rows.slice(0,LIM).map(r=>`<tr class="clk" data-act="detail" data-col="${col}" data-id="${r.id}">${S.cols.map(c=>`<td>${c[1](r)}</td>`).join("")}
+        SEL.shown=rows.slice(0,LIM).map(r=>r.id);
+        $("#tblBody").innerHTML=rows.slice(0,LIM).map(r=>`<tr class="clk ${SEL.ids.has(r.id)?"picked":""}" data-act="detail" data-col="${col}" data-id="${r.id}">
+          <td class="sel" data-act="noop"><input type="checkbox" data-sel="${r.id}" ${SEL.ids.has(r.id)?"checked":""} aria-label="Select"></td>${S.cols.map(c=>`<td>${c[1](r)}</td>`).join("")}
           <td class="act"><button class="btn sm" data-act="edit" data-col="${col}" data-id="${r.id}">Edit</button><button class="btn sm danger" data-act="del" data-col="${col}" data-id="${r.id}">✕</button></td></tr>`).join("")
           ||`<tr><td colspan="${S.cols.length+1}" class="dim" style="text-align:center;padding:24px">Nothing matches.</td></tr>`;
         $("#tblPager").textContent=rows.length>LIM?`Showing ${LIM} of ${rows.length} — refine the filter`:`${rows.length} shown`;
+        selBar();
       };
+      SEL.redraw=draw;
       $("#tblQ").addEventListener("input",draw); $("#tblF")&&$("#tblF").addEventListener("change",draw); draw();
     }};
   };
 }
 ["rooms","storages","cards","equipment"].forEach(c=>V[c]=tableView(c));
+
+/* ---------- multi-select: delete several records at once ---------- */
+const SEL={col:null, ids:new Set(), shown:[], redraw:null};
+function selBar(){
+  const have=new Set(DB[SEL.col]?DB[SEL.col].map(r=>r.id):[]);
+  [...SEL.ids].forEach(id=>{ if(!have.has(id)) SEL.ids.delete(id); });   // deleted meanwhile
+  const bar=$("#bulkBar"); if(!bar) return;
+  bar.classList.toggle("hidden",!SEL.ids.size);
+  $("#bulkN").textContent=`${SEL.ids.size} selected`;
+  const all=$("#selAll"), on=SEL.shown.filter(id=>SEL.ids.has(id)).length;
+  if(all){ all.checked=!!SEL.shown.length&&on===SEL.shown.length; all.indeterminate=on>0&&on<SEL.shown.length; }
+}
+document.addEventListener("change",e=>{
+  const t=e.target;
+  if(t.id==="selAll"){ SEL.shown.forEach(id=>t.checked?SEL.ids.add(id):SEL.ids.delete(id)); SEL.redraw&&SEL.redraw(); return; }
+  if(t.dataset&&t.dataset.sel){ const id=+t.dataset.sel; t.checked?SEL.ids.add(id):SEL.ids.delete(id);
+    t.closest("tr")?.classList.toggle("picked",t.checked); selBar(); }
+});
+function askBulkDelete(col){
+  const S=SCHEMA[col], recs=DB[col].filter(r=>SEL.ids.has(r.id));
+  if(!recs.length){ toast("Nothing selected","info"); return; }
+  const plan=recs.map(r=>({r,d:S.del(r)})), ok=plan.filter(x=>!x.d.block), blocked=plan.filter(x=>x.d.block);
+  if(!ok.length){ toast(blocked[0].d.block,"err"); return; }
+  const warns=[...new Set(ok.map(x=>x.d.warn).filter(Boolean))];
+  openSheet(`<h3 style="color:var(--st-attention)">Delete ${ok.length} ${ok.length===1?S.one:S.title.toLowerCase()}</h3>
+    <p class="sub">${esc(ok.slice(0,12).map(x=>S.label(x.r)).join(", "))}${ok.length>12?` and ${ok.length-12} more`:""}.</p>
+    ${warns.length?`<div class="panel tiny" style="margin-bottom:10px">${warns.slice(0,6).map(w=>`<div>• ${esc(w)}</div>`).join("")}${warns.length>6?`<div class="dim">…and ${warns.length-6} more notes</div>`:""}</div>`:""}
+    ${blocked.length?`<p class="warn tiny">${blocked.length} can't be deleted and will be skipped: ${esc(blocked[0].d.block)}</p>`:""}
+    <p class="tiny muted">A snapshot is taken first, so everything can be restored.</p>
+    <div class="foot"><span class="grow"></span><button class="btn" data-act="close">Cancel</button>
+      <button class="btn danger" data-act="do-bulk-del" data-col="${col}">Delete ${ok.length}</button></div>`);
+}
+function doBulkDelete(col){
+  const S=SCHEMA[col], recs=DB[col].filter(r=>SEL.ids.has(r.id)).filter(r=>!S.del(r).block);
+  if(!recs.length){ closeSheet(); return; }
+  const labels=recs.map(r=>S.label(r));
+  // each record's own delete rule runs, in the same order as one-by-one deletes, in ONE commit (one snapshot)
+  commit(`Delete ${recs.length} ${S.title.toLowerCase()}`,()=>{ recs.forEach(r=>{ if(DB[col].includes(r)) S.del(r).run(); }); },
+    {action:`${recs.length} ${S.title.toLowerCase()} deleted`,notes:labels.join(", ").slice(0,1000)});
+  SEL.ids.clear(); closeSheet(); toast(`${recs.length} deleted`);
+}
 
 /* ---------- storage map ---------- */
 const STC = k => `var(--st-${k==="guest_using"?"guest":k})`;
@@ -1560,6 +1613,10 @@ document.addEventListener("click",e=>{
     case "save": saveForm(col,el.dataset.id); break;
     case "del": askDelete(col,id); break;
     case "do-del": doDelete(col,id); break;
+    case "bulk-del": askBulkDelete(col); break;
+    case "do-bulk-del": doBulkDelete(col); break;
+    case "sel-clear": SEL.ids.clear(); SEL.redraw&&SEL.redraw(); break;
+    case "noop": break;
     case "raw": openRaw(col,id); break;
     case "save-raw": saveRaw(col,id); break;
     case "csv": toCSV(col); break;
