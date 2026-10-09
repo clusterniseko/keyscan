@@ -333,11 +333,14 @@ def init_db():
                            VALUES (%s, 'Staff', '', 'staff', 'staff', %s, %s, %s)""",
                         (new_id() + 1, now, now, generate_password_hash(pin) if re.fullmatch(r"\d{4}", pin) else None))
         tidy_hall(cur)                                    # clean up rooms left over by older versions
-        if meta_get(cur, "layout_seeded") is None:
+        # once per layout version: an empty hall gets the floor-plan areas (version 2 =
+        # one area per equipment kind); a hall emptied on purpose later stays empty
+        if meta_get(cur, "layout_seeded") != "2":
             cur.execute("SELECT count(*) AS n FROM storages")
             if cur.fetchone()["n"] == 0:
                 create_layout(cur)
-            cur.execute("INSERT INTO meta (key, value) VALUES ('layout_seeded', '1') ON CONFLICT DO NOTHING")
+            cur.execute("""INSERT INTO meta (key, value) VALUES ('layout_seeded', '2')
+                           ON CONFLICT (key) DO UPDATE SET value = '2'""")
         cur.execute("SELECT value FROM meta WHERE key = 'secret_key'")
         return cur.fetchone()["value"]
 

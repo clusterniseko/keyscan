@@ -67,8 +67,10 @@ python app.py                   # http://localhost:5000
   (y, si está llena, la zona normal).
 - Cada zona tiene un tipo (*Holds*): se elige al crear la fila en Hall setup / Storage map
   o con el selector de cada zona. Las zonas sin tipo no se usan en la asignación automática.
-- **Check in by room**: sin tarjeta, solo con el número de habitación (para móviles sin Web NFC).
-  La tarjeta se puede añadir después desde la habitación.
+- **Check in** (inicio → *Check in*) se hace con el número de habitación; la tarjeta es opcional.
+  Se puede añadir después desde la página de la habitación, o escaneándola y escribiendo el mismo número.
+- Si el guardaesquís queda vacío, al arrancar la nueva versión se crean solas las zonas del plano
+  (una vez). También con *Create storage areas* en el inicio o *Restore default layout* en Hall setup.
 - **Fotos**: cada equipo puede llevar una foto. Se reduce en el móvil y se guarda en PostgreSQL
   (tabla `photos`); el registro solo guarda su id. Las fotos que ya no usa ningún equipo se
   borran a los `PHOTO_KEEP_DAYS` días (por defecto 90). Las copias de seguridad JSON no incluyen fotos.
