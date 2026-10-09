@@ -247,6 +247,23 @@ select.input{appearance:none;background-image:linear-gradient(45deg,transparent 
 .qbtn b{font-family:var(--display);font-size:14px;letter-spacing:.8px;text-transform:uppercase;text-align:center;line-height:1.05}
 .qbtn.on{border-color:var(--signal);background:rgba(255,106,43,.14)}
 .qbtn .cnt{font-family:var(--display);font-size:13px;color:var(--signal)}
+.thumb{width:44px;height:44px;border-radius:9px;overflow:hidden;flex:none;padding:0;border:1px solid var(--line);background:var(--night)}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.ci-item{background:var(--slab);border:1px solid var(--line);border-radius:var(--r);padding:12px;margin-bottom:10px}
+.ci-item .hd{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.ci-item .hd b{flex:1;font-family:var(--display);font-size:20px;letter-spacing:.6px;text-transform:uppercase}
+.ci-item .two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ci-item label.f{margin-bottom:8px}
+.ci-photo{display:flex;align-items:center;gap:10px;margin:4px 0 8px}
+.ci-photo img{width:64px;height:64px;object-fit:cover;border-radius:10px;border:1px solid var(--line)}
+.check{display:flex;align-items:center;gap:10px;min-height:44px;font-weight:600;font-size:15px}
+.check input{width:22px;height:22px;accent-color:var(--signal)}
+.dest{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.dest select{flex:1;min-width:150px}
+.kinds{display:flex;flex-wrap:wrap;gap:8px}
+.kinds span{background:var(--slab);border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600}
+.kinds span b{font-family:var(--display);font-size:17px;margin-right:4px}
+.kinds span.none{border-color:var(--st-attention);color:#FF8080}
 
 /* ---------- history ---------- */
 .hist{border-left:2px solid var(--line);margin-left:6px;padding-left:16px;position:relative}
@@ -401,17 +418,53 @@ const STATUS = {
   attention:{label:"Needs attention", c:"var(--st-attention)"},
   closed   :{label:"Closed",    c:"var(--st-closed)"}
 };
+/* Only three things are stored: boots, skis (with their poles) and snowboards.
+   The others are kept so records from older versions still display. */
 const CATS = {
-  skis:{label:"Skis", ic:"🎿", size:"Length (cm)", type:["Alpine","Touring","Race","Freeride","Kids"]},
-  boots:{label:"Ski boots", ic:"👢", size:"Mondo size"},
-  poles:{label:"Poles", ic:"🥢", size:"Length (cm)"},
-  snowboard:{label:"Snowboard", ic:"🏂", size:"Length (cm)"},
-  sbboots:{label:"Snowboard boots", ic:"🥾", size:"Size"},
-  helmet:{label:"Helmet", ic:"⛑️", size:"Size"},
-  goggles:{label:"Goggles", ic:"🥽"},
-  other:{label:"Other", ic:"📦", size:"Detail"}
+  boots:{label:"Boots", ic:"🥾", size:"Size"},
+  skis:{label:"Skis + poles", short:"Skis", ic:"🎿", size:"Length (cm)"},
+  snowboard:{label:"Snowboard", short:"Board", ic:"🏂", size:"Length (cm)"},
+  poles:{label:"Poles", ic:"🥢", size:"Length (cm)", old:true},
+  sbboots:{label:"Snowboard boots", ic:"🥾", size:"Size", old:true},
+  helmet:{label:"Helmet", ic:"⛑️", size:"Size", old:true},
+  goggles:{label:"Goggles", ic:"🥽", old:true},
+  other:{label:"Other", ic:"📦", size:"Detail", old:true}
 };
-let DB = null, SESSION = null, nav = [], scanCtx = null, draft = null;
+const STORED = ["boots","skis","snowboard"];
+/* Every area of the hall holds one kind of equipment. Each item gets its own location. */
+const KINDS = {boots:"Boots", ski:"Ski", ski_kids:"Ski kids", snowboard:"Snowboard", vip:"VIP"};
+/* The hall as drawn on the floor plan (viewBox 100 × 54). Keyed by area name: an
+   area renamed in Hall setup simply drops off the drawing, nothing breaks. */
+const HALL_PLAN = {
+  "Boots 1":  {x:2,  y:4,  w:28, h:10, where:"top row, left"},
+  "Boots 2":  {x:33, y:4,  w:17, h:10, where:"top row, middle"},
+  "Snowboard":{x:53, y:4,  w:14, h:10, where:"top row, right"},
+  "Ski 1":    {x:68, y:4,  w:9,  h:10, where:"top row, next to Snowboard"},
+  "Ski 2":    {x:84, y:4,  w:9,  h:44, where:"right wall"},
+  "Boots 3":  {x:2,  y:38, w:26, h:10, where:"bottom row, left"},
+  "Boots 4":  {x:33, y:38, w:11, h:10, where:"bottom row, between the doors"},
+  "VIP":      {x:49, y:38, w:9,  h:10, where:"bottom row, after the 2nd door"},
+  "Ski Kids": {x:58, y:38, w:18, h:10, where:"bottom row, right"}
+};
+const DOORS = [[28,5],[44,5],[76,6]];          // gaps in the bottom row: [x, width]
+const whereOf = s => HALL_PLAN[s && s.section] ? HALL_PLAN[s.section].where : "";
+/* mini floor plan: every area with its free count; mark = area names to highlight */
+function hallPlan(mark){
+  const areas=Object.keys(HALL_PLAN).filter(a=>DB.storages.some(s=>s.section===a));
+  if(!areas.length) return "";
+  const hi=new Set(mark||[]);
+  return `<svg viewBox="0 0 100 54" role="img" aria-label="Hall plan" style="width:100%;display:block;background:var(--slab);border:1px solid var(--line);border-radius:14px">
+    ${DOORS.map(([x,w])=>`<rect x="${x}" y="47" width="${w}" height="2" fill="var(--signal)" opacity=".7"/><text x="${x+w/2}" y="53" text-anchor="middle" font-size="2.6" fill="var(--dim)">DOOR</text>`).join("")}
+    ${areas.map(a=>{ const p=HALL_PLAN[a], rows=DB.storages.filter(s=>s.section===a), f=rows.filter(isFree).length, on=hi.has(a);
+      const cx=p.x+p.w/2, cy=p.y+p.h/2, tall=p.h>p.w*2, room=tall?p.h:p.w;
+      const fs=Math.min(3,room/a.length*1.6), free=room<16?`${f}/${rows.length}`:`${f}/${rows.length} free`;
+      return `<g data-act="plan-area" data-area="${esc(a)}" style="cursor:pointer">
+        <rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" rx="1.5" fill="${on?"rgba(255,106,43,.35)":"var(--slab2)"}" stroke="${on?"var(--signal)":f?"var(--line)":"var(--st-attention)"}" stroke-width="${on?.8:.4}"/>
+        <text x="${cx}" y="${cy-(tall?2:.6)}" text-anchor="middle" font-size="${fs.toFixed(2)}" font-weight="700" fill="var(--frost)" ${tall?`transform="rotate(-90 ${cx} ${cy-2})"`:""}>${esc(a)}</text>
+        <text x="${cx}" y="${cy+(tall?8:3.6)}" text-anchor="middle" font-size="2.6" fill="${f?"var(--mist)":"#FF8080"}">${free}</text></g>`; }).join("")}
+  </svg>`;
+}
+let DB = null, SESSION = null, nav = [], scanCtx = null;
 
 /* ids are unique across devices (clock + random, see sync.js) */
 const uid = () => newId();
@@ -448,10 +501,69 @@ const guestOf = r => r && r.status!=="checked_out" ? (r.guest_name||"") : "";
 function normCode(s){ return String(s??"").toUpperCase().replace(/[^A-Z0-9]/g,""); }
 const stInfo = k => STATUS[k] || {label:String(k||"Unknown"), c:"var(--st-attention)"};
 const catInfo = k => CATS[k] || CATS.other;
+const eqLabel = e => catInfo(e.category).label+(e.kids?" (kids)":"");
+
+/* --- storage kinds and automatic assignment --- */
+function kindFromName(n){
+  n=String(n||"").toLowerCase();
+  if(/vip/.test(n)) return "vip";
+  if(/snow/.test(n)) return "snowboard";
+  if(/boot|bota/.test(n)) return "boots";
+  if(/kid|niñ|child|junior/.test(n)) return "ski_kids";
+  if(/ski|esqu/.test(n)) return "ski";
+  return null;
+}
+/* areas from the default layout carry their kind; others are read from the area name */
+const kindOf = s => KINDS[s.kind] ? s.kind : kindFromName(s.section);
+const isFree = s => s.status==="available" && s.room_id==null && !eqCount(s.id);
+const byNumber = (a,b) => String(a.section||"").localeCompare(String(b.section||""),undefined,{numeric:true})
+  || String(a.storage_number??"").localeCompare(String(b.storage_number??""),undefined,{numeric:true});
+/* where an item may go, best first: VIP guests use the VIP area while it has room,
+   kids' skis use Ski kids, then the regular area of that kind */
+function kindsFor(item,vip){
+  const k = item.category==="skis" ? (item.kids?["ski_kids","ski"]:["ski"])
+    : item.category==="boots" ? ["boots"] : item.category==="snowboard" ? ["snowboard"] : [];
+  return vip ? ["vip",...k] : k;
+}
+/* picks a free location for every item without a manual choice; never twice the same */
+function autoAssign(items,vip){
+  const taken=new Set(items.filter(i=>i.storage_id).map(i=>i.storage_id));
+  const free=DB.storages.filter(isFree).sort(byNumber);
+  items.forEach(i=>{
+    i.auto=null; if(i.storage_id) return;
+    for(const k of kindsFor(i,vip)){
+      const s=free.find(x=>kindOf(x)===k && !taken.has(x.id));
+      if(s){ i.auto=s.id; taken.add(s.id); return; }
+    }
+  });
+}
+const freeByKind = () => { const o={}; DB.storages.filter(isFree).forEach(s=>{ const k=kindOf(s)||"other"; o[k]=(o[k]||0)+1; }); return o; };
+
+/* --- photos: resized on the phone, stored on the server, rows keep only the id --- */
+const photoUrl = id => "/api/photos/"+encodeURIComponent(id);
+function shrinkPhoto(file){
+  return new Promise((res,rej)=>{
+    const url=URL.createObjectURL(file), img=new Image();
+    img.onload=()=>{ const k=Math.min(1,1280/Math.max(img.naturalWidth,img.naturalHeight));
+      const c=document.createElement("canvas"); c.width=Math.round(img.naturalWidth*k); c.height=Math.round(img.naturalHeight*k);
+      c.getContext("2d").drawImage(img,0,0,c.width,c.height); URL.revokeObjectURL(url); res(c.toDataURL("image/jpeg",0.72)); };
+    img.onerror=()=>{ URL.revokeObjectURL(url); rej(new Error("That file is not a photo")); };
+    img.src=url;
+  });
+}
+async function uploadPhoto(dataUrl){ return (await API("/api/photos",{data:dataUrl})).id; }
+function openPhoto(id,caption){
+  openSheet(`<h3>Photo</h3>${caption?`<p class="sub">${esc(caption)}</p>`:""}
+    <img src="${photoUrl(id)}" alt="Equipment photo" style="width:100%;border-radius:12px;display:block;background:var(--night)">
+    <button class="btn" style="margin-top:14px" data-act="close-sheet">Close</button>`);
+}
+const thumb = (id,caption) => id?`<button class="thumb" data-act="photo" data-id="${esc(id)}" data-c="${esc(caption||"")}" aria-label="Open photo"><img src="${photoUrl(id)}" alt="" loading="lazy"></button>`:"";
+
 function log(action, o={}){
   DB.history.unshift({id:uid(),user_id:SESSION?SESSION.id:null,action,
     room_id:o.room_id??null,storage_id:o.storage_id??null,key_card_id:o.key_card_id??null,
-    equipment_id:o.equipment_id??null,timestamp:now(),notes:o.notes||"",prev:o.prev||null,next:o.next||null});
+    equipment_id:o.equipment_id??null,timestamp:now(),notes:o.notes||"",prev:o.prev||null,next:o.next||null,
+    ...(o.photo_id?{photo_id:o.photo_id}:{})});
   if(DB.history.length>5000) DB.history.length=5000;     // display cap only; the server keeps everything
 }
 function setStorageStatus(s,next,note){
@@ -611,13 +723,13 @@ function alerts(){
       out.push({hot:true,t:"Storage needs attention",p:`${s.storage_number} is flagged for inspection.`,act:{view:"storage",id:s.id}});
   });
   DB.cards.forEach(c=>{
-    if(c.room_id && !c.storage_id)
-      out.push({hot:false,t:"Card without storage",p:`Card ${c.card_code} belongs to room ${room(c.room_id)?.room_number} but no storage is assigned.`,act:{view:"room",id:c.room_id}});
+    if(c.room_id && !storagesOfRoom(c.room_id).length)
+      out.push({hot:false,t:"Card without storage",p:`Card ${c.card_code} belongs to room ${room(c.room_id)?.room_number} but no equipment is checked in.`,act:{view:"room",id:c.room_id}});
   });
   departingRooms().forEach(({r,d,sts})=>{
     const items=sts.reduce((a,x)=>a+eqCount(x.id),0);
-    if(d<0) out.push({hot:true,t:"Departure not closed",p:`Room ${r.room_number} left on ${fmtDay(r.departure)} — ${sts.map(x=>x.storage_number).join(", ")} is still assigned${items?` with ${items} items`:""}.`,act:{view:"storage",id:sts[0].id}});
-    else if(d===0) out.push({hot:false,t:"Leaving today",p:`Room ${r.room_number} checks out today — ${items} items in ${sts.map(x=>x.storage_number).join(", ")}.`,act:{view:"storage",id:sts[0].id}});
+    if(d<0) out.push({hot:true,t:"Departure not closed",p:`Room ${r.room_number} left on ${fmtDay(r.departure)} — ${sts.map(x=>x.storage_number).join(", ")} still assigned${items?` with ${items} items`:""}.`,act:{view:"room",id:r.id}});
+    else if(d===0) out.push({hot:false,t:"Leaving today",p:`Room ${r.room_number} checks out today — ${items} items in ${sts.map(x=>x.storage_number).join(", ")}.`,act:{view:"room",id:r.id}});
   });
   DB.storages.filter(s=>s.status==="guest_using").forEach(s=>{
     const h=DB.history.find(x=>x.storage_id===s.id&&x.action==="Equipment checked out");
@@ -643,7 +755,14 @@ VIEWS.dash = () => {
       <h1>Where is this<br>guest's equipment?</h1>
       <button class="scan-cta" data-act="scan" data-ctx="identify"><span class="rd"></span>
         <span><b>Scan key card</b><span>Tap the card on the reader — or type the code</span></span></button>
+      <div class="btn-grid" style="margin-top:10px;position:relative;z-index:2">
+        <button class="btn" data-act="nav" data-view="stow">Check in by room</button>
+        <button class="btn" data-act="nav" data-view="rooms">Find by room</button>
+      </div>
     </section>
+
+    <h2 class="sec">Free locations</h2>
+    ${kindsBar()}
 
     ${DB.storages.length?"":`
     <div class="panel" style="margin-top:12px;border-color:var(--signal)">
@@ -688,6 +807,10 @@ VIEWS.dash = () => {
     <button class="btn ghost" data-act="nav" data-view="history" style="margin-top:6px">Open full history</button>
   `};
 };
+function kindsBar(){
+  const f=freeByKind();
+  return `<div class="kinds">${Object.entries(KINDS).map(([k,l])=>`<span class="${f[k]?"":"none"}"><b>${f[k]||0}</b>${esc(l)}</span>`).join("")}</div>`;
+}
 function histEvent(h){
   const bits=[];
   if(h.room_id) bits.push("Room "+(room(h.room_id)?.room_number||"—"));
@@ -696,7 +819,7 @@ function histEvent(h){
   if(h.prev&&h.next) bits.push(h.prev+" → "+h.next);
   if(h.notes) bits.push(h.notes);
   return `<div class="hev"><div class="t">${fmtDT(h.timestamp)} · ${esc(h.user_id!=null&&user(h.user_id)?firstName(user(h.user_id)):"System")}</div>
-    <b>${esc(h.action)}</b><p>${esc(bits.join(" · "))}</p></div>`;
+    <b>${esc(h.action)}</b><p>${esc(bits.join(" · "))}</p>${h.photo_id?`<div style="margin-top:6px">${thumb(h.photo_id,h.notes)}</div>`:""}</div>`;
 }
 
 /* ==========================================================================
@@ -750,6 +873,7 @@ window.SkiValet = {
 
 
 let nfcReader=null, nfcState="idle", wedge="", wedgeT=null;
+const canReadNfc = () => hasNativeBridge() || (!IS_IOS && "NDEFReader" in window && window.isSecureContext);
 const CTX_LABEL={identify:"Identify card",add_card:"Add key card",checkin:"Check in equipment",checkout:"Check out equipment",move:"Scan card"};
 VIEWS.scan = (p) => {
   scanCtx = p;
@@ -773,7 +897,8 @@ VIEWS.scan = (p) => {
              <p>Apple does not allow web pages to read cards. Pair a Bluetooth card reader — it types the code straight into the field below — or install the wrapper app.</p></span></div>`
           : `<button class="btn primary" data-act="nfc-start">Enable NFC reader</button>`}
     </div>
-    ${p.ctx==="identify"?`<button class="btn ghost" style="margin-top:10px" data-act="nav" data-view="rooms">No reader? Find by room number</button>`:""}
+    ${p.ctx==="checkin"?`<button class="btn ${canReadNfc()?"ghost":"primary"}" style="margin-top:10px" data-act="nav" data-view="stow">No NFC? Check in by room number</button>`
+      : p.ctx!=="add_card"?`<button class="btn ${canReadNfc()?"ghost":"primary"}" style="margin-top:10px" data-act="nav" data-view="rooms">No NFC? Find by room number</button>`:""}
     <h2 class="sec">Or enter the code</h2>
     <div class="panel">
       <input class="input big" id="codeIn" placeholder="Card UID, e.g. 04A2B7C19E3F80" autocomplete="off" autocapitalize="characters" spellcheck="false">
@@ -902,8 +1027,13 @@ function handleCard(rawCode){
   c.last_scanned_at=now();
   log("Key card scanned",{key_card_id:c.id,room_id:c.room_id,storage_id:c.storage_id});
   save();
-  if(stor(c.storage_id)) replaceView("storage",{id:c.storage_id, card_id:c.id, intent:ctx.ctx});
-  else if(room(c.room_id)) replaceView("room",{id:c.room_id, card_id:c.id, notice:"This card has no storage yet."});
+  // a guest's items sit in several locations (one per item): the room is the guest's page
+  if(room(c.room_id)){
+    if(ctx.ctx==="checkin") replaceView("stow",{room_id:c.room_id});
+    else replaceView("room",{id:c.room_id, card_id:c.id, intent:ctx.ctx,
+      notice:storagesOfRoom(c.room_id).length?"":"No equipment checked in for this room yet."});
+  }
+  else if(stor(c.storage_id)) replaceView("storage",{id:c.storage_id, card_id:c.id, intent:ctx.ctx});
   else replaceView("register",{code, next:ctx.ctx});
 }
 function addedCardSheet(nc){
@@ -939,7 +1069,6 @@ function doReassign(cardId,roomId,storageId){
    8. REGISTER NEW CARD
    ========================================================================== */
 VIEWS.register = (p) => {
-  const freeStorages = DB.storages.filter(s=>s.status==="available");
   const old = cardByCode(p.code);                       // released card coming back (rooms rotate, so no room is suggested)
   return {title: old?"Returning card":"New key card", sub: old?"Released — ready to reuse":"Not registered yet",
   body:`
@@ -947,62 +1076,206 @@ VIEWS.register = (p) => {
       <div class="eyebrow">Card code detected</div>
       <div class="mono" style="font-size:26px;font-weight:700;margin-top:6px">${esc(p.code)}</div>
     </div>
-    <h2 class="sec">Link the card</h2>
+    <h2 class="sec">Link the card to a room</h2>
     <div class="panel">
       <label class="f"><span>Room number</span>
-        <input class="input" id="fRoom" placeholder="Room" autocomplete="off"></label>
+        <input class="input" id="fRoom" placeholder="Room" autocomplete="off" inputmode="numeric"></label>
       <label class="f"><span>Guest name (optional)</span>
         <input class="input" id="fGuest" placeholder="Surname" autocomplete="off"></label>
-      <label class="f"><span>Storage number</span>
-        <input class="input" id="fStorage" placeholder="Storage" autocomplete="off" autocapitalize="characters"></label>
       <label class="f"><span>Hotel departure (optional)</span>
         <input class="input" id="fOut" type="date" value=""></label>
-      <div class="hint">Either field can be left empty — a storage can be prepared before the room is known, and a room can be registered before a storage is free.</div>
+      <label class="check"><input type="checkbox" id="fVip"> VIP guest — use the VIP area</label>
+      <div class="hint">Storage locations are given item by item at check-in: boots, skis and snowboards each go to their own area.</div>
     </div>
-    <h2 class="sec">Free storages</h2>
-    <div class="pill-list">${freeStorages.slice(0,18).map(s=>`<button class="pill" data-act="pick-storage" data-n="${esc(s.storage_number)}">${esc(s.storage_number)}</button>`).join("")||`<span class="muted">${DB.storages.length?"Every location is taken.":"No locations defined yet — type any number above and it will be created."}</span>`}</div>
     <div class="btn-grid one" style="margin-top:20px">
       <button class="btn primary" data-act="save-card" data-code="${esc(p.code)}" data-next="${esc(p.next||"identify")}">Save key card</button>
       <button class="btn ghost" data-act="back">Cancel</button>
     </div>`,
   after(){ setTimeout(()=>$("#fRoom")?.focus(),80); }};
 };
+/* finds or opens the room for a new stay; a checked-out room starts clean */
+function upsertRoom(num,guest,dep,vip){
+  let r=roomByNumber(num);
+  if(!r){ r={id:uid(),room_number:num,guest_name:guest,departure:dep,status:"staying",created_at:now(),updated_at:now()}; DB.rooms.push(r); }
+  else{ if(r.status==="checked_out"){ r.guest_name=guest; r.departure=dep; r.vip=false; } else { if(guest) r.guest_name=guest; if(dep) r.departure=dep; }
+    r.status="staying"; r.updated_at=now(); }
+  if(vip) r.vip=true;
+  return r;
+}
 function saveNewCard(code,next){
   const rNum=$("#fRoom").value.trim(), guest=$("#fGuest").value.trim();
-  const sNum=$("#fStorage").value.trim().toUpperCase().replace(/\s+/g," ");
-  const dep=$("#fOut")?$("#fOut").value:"";
-  if(!rNum && !normCode(sNum)){ toast("Enter a room or a storage","err"); return; }
-  // validate everything BEFORE changing data, so an error never leaves half a registration behind
-  let r = rNum ? roomByNumber(rNum) : null;
-  let s = normCode(sNum) ? storByNumber(sNum) : null;
-  if(s && s.room_id!=null && room(s.room_id)){
-    const owner=room(s.room_id);
-    if(!rNum){ toast(`${s.storage_number} belongs to room ${owner.room_number} — enter that room`,"err"); return; }
-    if(!r || owner.id!==r.id){ toast(`${s.storage_number} belongs to room ${owner.room_number}`,"err"); return; }
-  }
-  if(rNum){
-    if(!r){ r={id:uid(),room_number:rNum,guest_name:guest,departure:dep,status:"staying",created_at:now(),updated_at:now()}; DB.rooms.push(r); }
-    else { if(r.status==="checked_out"){ r.guest_name=guest; r.departure=dep; } else { if(guest) r.guest_name=guest; if(dep) r.departure=dep; }
-      r.status="staying"; r.updated_at=now(); } }
-  if(normCode(sNum)){
-    if(!s){ s={id:uid(),storage_number:sNum,section:"Unassigned area",status:"available",room_id:null,created_at:now(),updated_at:now()}; DB.storages.push(s); }
-    if(r){ s.room_id=r.id; s.updated_at=now(); if(s.status==="available") setStorageStatus(s,"preparing","Assigned at card registration"); }
-  }
-  // every card of a room opens the same storage: reuse the room's storage if none was typed
-  if(!s && r){ const own=storagesOfRoom(r.id); if(own.length) s=own[0]; }
+  const dep=$("#fOut")?$("#fOut").value:"", vip=!!$("#fVip")?.checked;
+  if(!rNum){ toast("Enter the room number","err"); return; }
+  const r=upsertRoom(rNum,guest,dep,vip);
+  const s=storagesOfRoom(r.id)[0]||null;
   let c = cardByCode(code), reused = false;
   if(c){ reused = c.status==="released";
-    Object.assign(c,{room_id:r?r.id:null,storage_id:s?s.id:null,status:"active",released_at:null,updated_at:now(),last_scanned_at:now()});
+    Object.assign(c,{room_id:r.id,storage_id:s?s.id:null,status:"active",released_at:null,updated_at:now(),last_scanned_at:now()});
   }else{
-    c={id:uid(),card_code:normCode(code),room_id:r?r.id:null,storage_id:s?s.id:null,status:"active",
+    c={id:uid(),card_code:normCode(code),room_id:r.id,storage_id:s?s.id:null,status:"active",
       created_at:now(),updated_at:now(),last_scanned_at:now()};
     DB.cards.push(c);
   }
   log(reused?"Key card reused":"Key card registered",
     {key_card_id:c.id,room_id:c.room_id,storage_id:c.storage_id,notes:guest?"Guest: "+guest:""});
   save(); toast("Key card registered");
-  if(s) replaceView("storage",{id:s.id,card_id:c.id,intent:next==="checkin"?"checkin":"new"});
-  else  replaceView("room",{id:r.id,card_id:c.id,notice:"No storage assigned yet."});
+  if(next==="checkin" || !s) replaceView("stow",{room_id:r.id});
+  else replaceView("room",{id:r.id,card_id:c.id,intent:next});
+}
+
+/* ==========================================================================
+   8b. CHECK IN — by key card or by room number. Every item gets its own
+       location in the area of its kind (boots / ski / ski kids / snowboard /
+       VIP); the valet can change the suggestion and add a photo per item.
+   ========================================================================== */
+VIEWS.stow = (p) => {
+  const d = p.d = p.d || {room:"", guest:"", dep:"", vip:false, items:[]};
+  const r = room(p.room_id);
+  if(p.room_id && !r) return {title:"Check in", body:`<div class="empty">This room no longer exists.</div>`};
+  if(r && d.vip===false && r.vip && r.status!=="checked_out") d.vip=true;
+  if(!d.items.length && !d.touched) d.items.push(newItem("boots"));
+  return {title:"Check in", sub:r?"Room "+esc(r.room_number):"By room number",
+  body:`
+    ${r?`<div class="panel"><div class="row between"><b class="num" style="font-size:30px">Room ${esc(r.room_number)}</b>
+        ${storagesOfRoom(r.id).length?`<span class="chip">${storagesOfRoom(r.id).length} stored</span>`:""}</div>
+        <div class="muted tiny" style="margin-top:4px">${esc(guestOf(r)||"No guest name")}${r.departure?" · leaves "+fmtDay(r.departure):""}</div>
+        <label class="check" style="margin-top:6px"><input type="checkbox" id="ciVip" ${d.vip?"checked":""}> VIP guest — use the VIP area</label></div>`
+    :`<div class="panel">
+        <label class="f"><span>Room number</span><input class="input big" id="ciRoom" value="${esc(d.room)}" placeholder="Room" inputmode="numeric" autocomplete="off"></label>
+        <div class="hint" id="ciRoomHint" style="margin:-6px 0 10px"></div>
+        <label class="f"><span>Guest name (optional)</span><input class="input" id="ciGuest" value="${esc(d.guest)}" placeholder="Surname" autocomplete="off"></label>
+        <label class="f"><span>Hotel departure (optional)</span><input class="input" id="ciDep" type="date" value="${esc(d.dep)}"></label>
+        <label class="check"><input type="checkbox" id="ciVip" ${d.vip?"checked":""}> VIP guest — use the VIP area</label>
+      </div>`}
+    <h2 class="sec">Equipment</h2>
+    <div id="ciItems"></div>
+    <div class="btn-grid" style="grid-template-columns:repeat(3,1fr)">
+      ${STORED.map(k=>`<button class="btn sm" style="width:100%;padding:0 6px" data-act="ci-add" data-k="${k}">+ ${catInfo(k).ic} ${esc(catInfo(k).short||catInfo(k).label)}</button>`).join("")}
+    </div>
+    <div class="hint">One line per item: a pair of boots, a pair of skis with their poles, one snowboard. Each goes to its own location.</div>
+    <div class="btn-grid one" style="margin-top:18px">
+      <button class="btn go" data-act="ci-save" id="ciSave">Check in</button>
+      ${r?"":`<button class="btn ghost" data-act="scan" data-ctx="checkin">Scan a key card instead</button>`}
+    </div>
+    <h2 class="sec">Free locations</h2>
+    ${kindsBar()}`,
+  after(){
+    const bind=(id,k,fn)=>{ const el=$(id); if(el) el.addEventListener(el.type==="checkbox"?"change":"input",()=>{ d[k]=el.type==="checkbox"?el.checked:el.value; if(fn) fn(); }); };
+    bind("#ciRoom","room",roomHint); bind("#ciGuest","guest"); bind("#ciDep","dep"); bind("#ciVip","vip",drawItems);
+    roomHint(); drawItems();
+    if(!r && !d.room) setTimeout(()=>$("#ciRoom")?.focus(),80);
+  }};
+};
+const newItem = k => ({key:uid(), category:k, kids:false, size:"", note:"", storage_id:null, photo:null, photo_id:null});
+const stowParams = () => current().view==="stow" ? current().params : null;
+function roomHint(){
+  const el=$("#ciRoomHint"), d=stowParams()?.d; if(!el||!d) return;
+  const r=d.room.trim()?roomByNumber(d.room):null;
+  el.textContent = r && r.status!=="checked_out" && storagesOfRoom(r.id).length
+    ? `Room ${r.room_number} already has ${storagesOfRoom(r.id).length} location(s) — these items are added to it.` : "";
+}
+function drawItems(){
+  const p=stowParams(), box=$("#ciItems"); if(!p||!box) return;
+  const d=p.d; autoAssign(d.items,d.vip);
+  const free=DB.storages.filter(isFree).sort(byNumber);
+  const areas=[...new Set(free.map(s=>s.section||"Unassigned area"))];
+  box.innerHTML = d.items.map((i,n)=>{
+    const c=catInfo(i.category), dest=stor(i.storage_id||i.auto);
+    const usedByOthers=new Set(d.items.filter(x=>x!==i).map(x=>x.storage_id||x.auto).filter(Boolean));
+    return `<div class="ci-item" data-key="${i.key}">
+      <div class="hd"><span style="font-size:22px">${c.ic}</span><b>${esc(c.label)}</b>
+        <button class="btn sm ghost" data-act="ci-del" data-key="${i.key}" aria-label="Remove">✕</button></div>
+      ${i.category==="skis"?`<label class="check"><input type="checkbox" data-ci="kids" ${i.kids?"checked":""}> Kids' skis — use Ski kids</label>`:""}
+      <div class="two">
+        <label class="f"><span>${esc(c.size||"Size")}</span><input class="input" data-ci="size" value="${esc(i.size)}" autocomplete="off"></label>
+        <label class="f"><span>Brand / colour</span><input class="input" data-ci="note" value="${esc(i.note)}" placeholder="Black Atomic" autocomplete="off"></label>
+      </div>
+      <div class="ci-photo">
+        ${i.photo?`<img src="${i.photo}" alt="">`:""}
+        <label class="btn sm" style="width:auto;flex:1">📷 ${i.photo?"Retake photo":"Add photo"}
+          <input type="file" accept="image/*" capture="environment" data-ci-photo="${i.key}" hidden></label>
+        ${i.photo?`<button class="btn sm ghost" data-act="ci-unphoto" data-key="${i.key}">Remove</button>`:""}
+      </div>
+      <div class="dest"><span class="eyebrow">Goes to</span>
+        ${dest?`<span class="tag sm">${esc(dest.storage_number)}</span>`:`<span class="chip solid s-attention">No free location</span>`}
+        <select class="input" data-ci="storage_id" aria-label="Location">
+          <option value="">${i.auto?"Automatic · "+esc(stor(i.auto).storage_number+" · "+(stor(i.auto).section||"")):"Automatic"}</option>
+          ${areas.map(a=>`<optgroup label="${esc(a)}">${free.filter(s=>(s.section||"Unassigned area")===a&&!usedByOthers.has(s.id)).map(s=>
+            `<option value="${s.id}" ${i.storage_id===s.id?"selected":""}>${esc(s.storage_number)}</option>`).join("")}</optgroup>`).join("")}
+        </select></div>
+    </div>`;
+  }).join("") || `<div class="empty"><span class="ic">🎿</span>Add the guest's boots, skis or snowboard below.</div>`;
+}
+function ciItem(el){ const p=stowParams(), k=+el.closest("[data-key]")?.dataset.key; return p && p.d.items.find(i=>i.key===k); }
+document.addEventListener("input",e=>{
+  const f=e.target.dataset && e.target.dataset.ci; if(!f || f==="storage_id" || f==="kids") return;
+  const i=ciItem(e.target); if(i) i[f]=e.target.value;
+});
+document.addEventListener("change",async e=>{
+  const t=e.target;
+  if(t.dataset && (t.dataset.ci==="storage_id" || t.dataset.ci==="kids")){
+    const i=ciItem(t); if(!i) return;
+    if(t.dataset.ci==="kids"){ i.kids=t.checked; i.storage_id=null; } else i.storage_id=t.value?+t.value:null;
+    drawItems(); return;
+  }
+  if(t.dataset && t.dataset.ciPhoto){
+    const i=ciItem(t), file=t.files&&t.files[0]; if(!i||!file) return;
+    try{ i.photo=await shrinkPhoto(file); i.photo_id=null; drawItems(); }catch(err){ toast(err.message,"err"); }
+    return;
+  }
+  if(t.id==="eqPhoto"){
+    const file=t.files&&t.files[0]; if(!file) return;
+    try{ eqPhoto=await shrinkPhoto(file); const im=$("#eqPhotoImg"); if(im){ im.src=eqPhoto; im.classList.remove("hidden"); } }catch(err){ toast(err.message,"err"); }
+  }
+});
+async function stowSave(){
+  const p=stowParams(); if(!p||busy) return;
+  const d=p.d; let r=room(p.room_id);
+  if(p.room_id && !r){ toast("That room no longer exists","err"); home(); return; }
+  if(!r && !d.room.trim()){ toast("Enter the room number","err"); $("#ciRoom")?.focus(); return; }
+  if(!d.items.length){ toast("Add at least one item","err"); return; }
+  autoAssign(d.items,d.vip);
+  const lost=d.items.find(i=>!stor(i.storage_id||i.auto));
+  if(lost){ toast(`No free location for ${catInfo(lost.category).label.toLowerCase()} — free one or pick another area`,"err"); drawItems(); return; }
+  const btn=$("#ciSave"); busy=true; if(btn) btn.disabled=true;
+  try{
+    // photos first: if an upload fails nothing has changed yet (done ones are not sent twice)
+    for(const i of d.items) if(i.photo && !i.photo_id){ if(btn) btn.textContent="Uploading photos…"; i.photo_id=await uploadPhoto(i.photo); }
+  }catch(err){ toast(err.message,"err"); busy=false; if(btn){ btn.disabled=false; btn.textContent="Check in"; } return; }
+  busy=false;
+  // another device may have taken a location meanwhile
+  const gone=d.items.find(i=>{ const s=stor(i.storage_id||i.auto); return !s || !isFree(s); });
+  if(gone){ gone.storage_id=null; toast("A location was just taken on another device — check the new suggestion","err"); render(); return; }
+  if(!r) r=upsertRoom(d.room.trim(),d.guest.trim(),d.dep,d.vip);
+  else if(d.vip!==!!r.vip){ r.vip=d.vip; r.updated_at=now(); }
+  const placed=[];
+  d.items.forEach(i=>{
+    const s=stor(i.storage_id||i.auto);
+    s.room_id=r.id; s.updated_at=now();
+    const e={id:uid(),storage_id:s.id,category:i.category,description:"",quantity:1,size:i.size.trim(),type:i.note.trim(),
+      status:"stored",created_at:now(),updated_at:now()};
+    if(i.kids) e.kids=true;
+    if(i.photo_id) e.photo_id=i.photo_id;
+    DB.equipment.push(e);
+    setStorageStatus(s,"occupied","Check-in");
+    log("Equipment checked in",{storage_id:s.id,room_id:r.id,equipment_id:e.id,photo_id:i.photo_id,notes:`${eqLabel(e)} ×1`});
+    placed.push([e,s]);
+  });
+  // the room's key cards open the guest's first location (older screens expect one)
+  const first=storagesOfRoom(r.id)[0];
+  cardsOfRoom(r.id).forEach(c=>{ if(c.storage_id==null||!stor(c.storage_id)||stor(c.storage_id).room_id!==r.id){ c.storage_id=first?first.id:null; c.updated_at=now(); } });
+  save();
+  replaceView("room",{id:r.id});
+  openSheet(`<h3>Checked in · Room ${esc(r.room_number)}</h3>
+    <p class="sub">Put each item in its location:</p>
+    ${placed.map(([e,s])=>`<div class="eq"><div class="ic">${catInfo(e.category).ic}</div>
+      <div class="body"><b>${esc(eqLabel(e))}</b><small>${esc([s.section,whereOf(s)].filter(Boolean).join(" · "))}</small></div>
+      <span class="tag sm">${esc(s.storage_number)}</span></div>`).join("")}
+    <div style="margin-top:12px">${hallPlan(placed.map(([,s])=>s.section))}</div>
+    <div class="btn-grid" style="margin-top:14px">
+      <button class="btn" data-act="scan" data-ctx="add_card" data-room="${r.id}" data-storage="${first?first.id:""}">+ Key card</button>
+      <button class="btn primary" data-act="close-sheet">Done</button></div>`);
+  toast(`${placed.length} item${placed.length===1?"":"s"} stored`);
 }
 
 /* ==========================================================================
@@ -1015,7 +1288,7 @@ VIEWS.storage = (p) => {
   const scannedCard = p.card_id ? card(p.card_id) : null;
   const hist = DB.history.filter(h=>h.storage_id===s.id).slice(0,6);
   const isOut = s.status==="guest_using";
-  return {title:s.storage_number, sub:esc(s.section||""),
+  return {title:s.storage_number, sub:esc([s.section,KINDS[kindOf(s)]&&KINDS[kindOf(s)]!==s.section?KINDS[kindOf(s)]:""].filter(Boolean).join(" · ")),
   body:`
     ${scannedCard?`<div class="panel" style="border-color:var(--st-ready);margin-bottom:12px">
       <div class="row between"><div><div class="eyebrow">Card scanned</div>
@@ -1029,8 +1302,9 @@ VIEWS.storage = (p) => {
         ${statusChip(s.status,true)}
       </div>
       <div style="margin-top:14px">
-        <div class="kv"><span>Room</span><b>${r?esc(r.room_number):"Not assigned"}</b></div>
+        <div class="kv"><span>Room</span><b>${r?`<button data-act="nav" data-view="room" data-id="${r.id}" style="font:inherit;color:inherit;padding:0;text-decoration:underline">${esc(r.room_number)}</button>${r.vip?" · VIP":""}`:"Not assigned"}</b></div>
         <div class="kv"><span>Guest</span><b>${guestOf(r)?esc(guestOf(r)):"—"}</b></div>
+        ${whereOf(s)?`<div class="kv"><span>Where</span><b>${esc(s.section)} · ${esc(whereOf(s))}</b></div>`:""}
         <div class="kv"><span>Key cards</span><b>${cards.length}</b></div>
         <div class="kv"><span>Equipment</span><b>${items} item${items===1?"":"s"}</b></div>
         <div class="kv"><span>Updated</span><b>${ago(s.updated_at)}</b></div>
@@ -1053,9 +1327,8 @@ VIEWS.storage = (p) => {
     <div class="two-col"><div>
     <h2 class="sec">Equipment ${items?`· ${items}`:""}</h2>
     ${eq.length? eq.map(e=>eqRow(e)).join("") : `<div class="empty"><span class="ic">🎿</span>Nothing stored here yet.<br>Add the guest's equipment to start.</div>`}
-    <div class="btn-grid" style="margin-top:10px">
-      <button class="btn" data-act="add-eq" data-id="${s.id}">Add equipment</button>
-      <button class="btn ghost" data-act="quick-eq" data-id="${s.id}">Quick add</button>
+    <div class="btn-grid one" style="margin-top:10px">
+      <button class="btn" data-act="add-eq" data-id="${s.id}">Add equipment to ${esc(s.storage_number)}</button>
     </div>
 
     <h2 class="sec">Key cards · ${cards.length}</h2>
@@ -1083,11 +1356,13 @@ VIEWS.storage = (p) => {
     if(p.intent==="checkout" && isOut){ p.intent=null; confirmReturn(s.id); }
   }};
 };
+function eqMeta(e){ const c=catInfo(e.category);
+  return [e.type,e.size?`${c.size||"Size"} ${e.size}`:"",e.description].filter(Boolean).join(" · "); }
 function eqRow(e){
   const c=catInfo(e.category);
-  const meta=[e.type,e.size?`${c.size||"Size"} ${e.size}`:"",e.description].filter(Boolean).join(" · ");
   return `<div class="eq"><div class="ic">${c.ic}</div>
-    <div class="body"><b>${esc(c.label)}</b><small>${esc(meta||"No details")}</small></div>
+    <button class="body" style="text-align:left;padding:0" data-act="eq-edit" data-id="${e.id}"><b>${esc(eqLabel(e))}</b><small>${esc(eqMeta(e)||"No details")} · edit</small></button>
+    ${e.photo_id?thumb(e.photo_id,eqLabel(e)):""}
     <div class="stepper">
       <button data-act="eq-minus" data-id="${e.id}" aria-label="Less">−</button>
       <span class="q">${esc(e.quantity)}</span>
@@ -1096,81 +1371,75 @@ function eqRow(e){
 }
 
 /* ---- equipment sheets ---- */
+let eqPhoto=null;                          // photo picked in the equipment sheet, not uploaded yet
 function openEqSheet(storageId, editId){
   const e = editId?DB.equipment.find(x=>x.id===editId):null;
-  const cat = e&&CATS[e.category]?e.category:"skis";
+  const cat = e&&CATS[e.category]?e.category:"boots";
+  const cats = STORED.includes(cat)?STORED:[...STORED,cat];
+  eqPhoto=null;
   openSheet(`<h3>${e?"Edit equipment":"Add equipment"}</h3>
     <p class="sub">Storage ${esc(stor(+storageId)?.storage_number||"—")}</p>
     <label class="f"><span>Category</span>
-      <select class="input" id="eCat">${Object.entries(CATS).map(([k,v])=>`<option value="${k}" ${k===cat?"selected":""}>${v.ic}  ${v.label}</option>`).join("")}</select></label>
+      <select class="input" id="eCat">${cats.map(k=>`<option value="${k}" ${k===cat?"selected":""}>${CATS[k].ic}  ${CATS[k].label}</option>`).join("")}</select></label>
+    <label class="check"><input type="checkbox" id="eKids" ${e&&e.kids?"checked":""}> Kids</label>
     <label class="f"><span>Quantity</span><input class="input" id="eQty" inputmode="numeric" value="${e?e.quantity:1}"></label>
-    <label class="f"><span>Size / length</span><input class="input" id="eSize" value="${e?esc(e.size||""):""}" placeholder="e.g. 170"></label>
-    <label class="f"><span>Type or note</span><input class="input" id="eType" value="${e?esc(e.type||e.description||""):""}" placeholder="Alpine, black Atomic…"></label>
+    <label class="f"><span>Size / length</span><input class="input" id="eSize" value="${e?esc(e.size||""):""}" placeholder="e.g. 27.5 or 170"></label>
+    <label class="f"><span>Brand / colour</span><input class="input" id="eType" value="${e?esc(e.type||e.description||""):""}" placeholder="Black Atomic…"></label>
+    <div class="ci-photo">
+      <img id="eqPhotoImg" class="${e&&e.photo_id?"":"hidden"}" src="${e&&e.photo_id?photoUrl(e.photo_id):""}" alt="">
+      <label class="btn sm" style="width:auto;flex:1">📷 ${e&&e.photo_id?"Replace photo":"Add photo"}
+        <input type="file" accept="image/*" capture="environment" id="eqPhoto" hidden></label></div>
     <div class="btn-grid" style="margin-top:8px">
       ${e?`<button class="btn danger" data-act="eq-delete" data-id="${e.id}">Remove</button>`:`<button class="btn" data-act="close-sheet">Cancel</button>`}
       <button class="btn primary" data-act="eq-save" data-storage="${storageId}" data-id="${e?e.id:""}">Save</button>
     </div>`);
 }
-function saveEq(storageId,editId){
-  const cat=$("#eCat").value, qty=Math.max(1,parseInt($("#eQty").value||"1",10)), size=$("#eSize").value.trim(), type=$("#eType").value.trim();
+async function saveEq(storageId,editId){
+  if(busy) return;
+  const cat=$("#eCat").value, kids=!!$("#eKids")?.checked, qty=Math.max(1,parseInt($("#eQty").value||"1",10)||1), size=$("#eSize").value.trim(), type=$("#eType").value.trim();
   if(!stor(+storageId)){ toast("That storage no longer exists","err"); closeSheet(); render(); return; }
+  let photo_id=null;
+  if(eqPhoto){ busy=true;
+    try{ photo_id=await uploadPhoto(eqPhoto); }catch(err){ toast(err.message,"err"); return; } finally{ busy=false; } }
+  eqPhoto=null;
   if(editId){ const e=DB.equipment.find(x=>x.id===+editId); if(!e){ closeSheet(); render(); return; }
     Object.assign(e,{category:cat,quantity:qty,size,type,description:"",updated_at:now()});
-    log("Equipment updated",{storage_id:e.storage_id,equipment_id:e.id,notes:`${catInfo(cat).label} ×${qty}`});
+    if(kids) e.kids=true; else delete e.kids;
+    if(photo_id) e.photo_id=photo_id;
+    log(photo_id?"Equipment photo added":"Equipment updated",{storage_id:e.storage_id,room_id:stor(e.storage_id)?.room_id,equipment_id:e.id,photo_id,notes:`${eqLabel(e)} ×${qty}`});
   }else{
     const e={id:uid(),storage_id:+storageId,category:cat,description:"",quantity:qty,size,type,status:"stored",created_at:now(),updated_at:now()};
+    if(kids) e.kids=true;
+    if(photo_id) e.photo_id=photo_id;
     DB.equipment.push(e);
-    log("Equipment added",{storage_id:e.storage_id,room_id:stor(e.storage_id).room_id,equipment_id:e.id,notes:`${catInfo(cat).label} ×${qty}`});
+    log("Equipment added",{storage_id:e.storage_id,room_id:stor(e.storage_id).room_id,equipment_id:e.id,photo_id,notes:`${eqLabel(e)} ×${qty}`});
     const s=stor(+storageId); if(s.status==="available") setStorageStatus(s,"preparing");
   }
   save(); closeSheet(); toast("Equipment saved"); render();
 }
-const QUICK=[["skis",1],["boots",1],["poles",1],["helmet",1],["goggles",1],["snowboard",1],["sbboots",1],["other",1]];
+/* "Boots ×1, Skis + poles ×1" — the admin Analytics page reads this format */
+const manifest = s => eqOf(s.id).map(e=>`${eqLabel(e)} ×${e.quantity}`).join(", ");
+const eqLine = e => `<div class="eq"><div class="ic">${catInfo(e.category).ic}</div>
+  <div class="body"><b>${esc(eqLabel(e))} × ${esc(e.quantity)}</b><small>${esc([e.type,e.size].filter(Boolean).join(" · ")||"—")}${stor(e.storage_id)?" · "+esc(stor(e.storage_id).storage_number):""}</small></div>
+  ${e.photo_id?thumb(e.photo_id,eqLabel(e)):""}</div>`;
+/* from a storage, check-in means: more items for this guest, each to its own location */
 function openCheckinSheet(storageId){
   const s=stor(+storageId); if(!s){ toast("That storage no longer exists","err"); return; }
-  draft = {}; QUICK.forEach(([k,d])=>draft[k]=0);
-  openSheet(`<h3>Check in equipment</h3>
-    <p class="sub">Room ${esc(room(s.room_id)?.room_number||"—")} · Storage ${esc(s.storage_number)}</p>
-    <div class="quick" id="quickGrid">${QUICK.map(([k,d])=>`
-      <button class="qbtn" data-act="q-toggle" data-k="${k}" data-d="${d}">
-        <span class="ic">${catInfo(k).ic}</span><b>${catInfo(k).label}</b><span class="cnt" data-cnt="${k}"></span></button>`).join("")}</div>
-    <div class="hint">Tap to add the usual quantity. Tap again to add one more.</div>
-    <div class="btn-grid" style="margin-top:14px">
-      <button class="btn" data-act="close-sheet">Cancel</button>
-      <button class="btn go" data-act="do-checkin" data-id="${storageId}">Check in</button>
-    </div>`);
-}
-function qToggle(k,d){
-  draft[k] = draft[k] ? draft[k]+1 : d;
-  const btn=$(`[data-act="q-toggle"][data-k="${k}"]`); btn.classList.add("on");
-  $(`[data-cnt="${k}"]`).textContent = "× "+draft[k];
-}
-function doCheckin(storageId){
-  const s=stor(+storageId); if(!s||!draft){ closeSheet(); return; }
-  const n=Object.values(draft).reduce((a,q)=>a+(q||0),0);
-  if(!n){ toast("Select at least one item","err"); return; }
-  Object.entries(draft).forEach(([k,q])=>{ if(!q) return;
-    const ex=DB.equipment.find(e=>e.storage_id===s.id&&e.category===k&&!e.size&&!e.type&&!e.description);
-    if(ex){ ex.quantity=(+ex.quantity||0)+q; ex.updated_at=now(); }
-    else DB.equipment.push({id:uid(),storage_id:s.id,category:k,description:"",quantity:q,size:"",type:"",status:"stored",created_at:now(),updated_at:now()});
-  });
-  setStorageStatus(s,"occupied","Check-in");
-  log("Equipment checked in",{storage_id:s.id,room_id:s.room_id,notes:Object.entries(draft).filter(([,q])=>q).map(([k,q])=>`${catInfo(k).label} ×${q}`).join(", ")});
-  save(); closeSheet(); toast(`${n} item${n===1?"":"s"} stored`); render();
+  if(room(s.room_id)) go("stow",{room_id:s.room_id});
+  else { toast("Assign a room first","info"); openAssignRoom(s.id); }
 }
 function confirmCheckout(storageId){
   const s=stor(+storageId), eq=eqOf(s.id);
   openSheet(`<h3>Release equipment</h3>
     <p class="sub">Room ${esc(room(s.room_id)?.room_number||"—")} · Storage ${esc(s.storage_number)}</p>
-    ${eq.map(e=>`<div class="eq"><div class="ic">${catInfo(e.category).ic}</div><div class="body"><b>${esc(catInfo(e.category).label)} × ${esc(e.quantity)}</b>
-      <small>${esc([e.type,e.size].filter(Boolean).join(" · ")||"—")}</small></div></div>`).join("")}
+    ${eq.map(eqLine).join("")}
     <div class="btn-grid" style="margin-top:14px">
       <button class="btn" data-act="close-sheet">Cancel</button>
       <button class="btn primary" data-act="do-checkout" data-id="${s.id}">Release equipment</button></div>`);
 }
 function doCheckout(id){
   const s=stor(+id); if(!s){ closeSheet(); return; } setStorageStatus(s,"guest_using","Handed to guest");
-  log("Equipment checked out",{storage_id:s.id,room_id:s.room_id,notes:eqOf(s.id).map(e=>`${catInfo(e.category).label} ×${e.quantity}`).join(", ")});
+  log("Equipment checked out",{storage_id:s.id,room_id:s.room_id,notes:manifest(s)});
   save(); closeSheet(); toast("Equipment checked out"); render();
 }
 function confirmReturn(storageId){
@@ -1196,10 +1465,7 @@ function confirmFinalOut(storageId){
   const s=stor(+storageId), r=room(s.room_id), eq=eqOf(s.id), cards=cardsOfStorage(s.id);
   openSheet(`<h3>Check out &amp; release</h3>
     <p class="sub">Room ${esc(r?.room_number||"—")} · Storage ${esc(s.storage_number)}</p>
-    ${eq.length?eq.map(e=>`<div class="eq"><div class="ic">${catInfo(e.category).ic}</div>
-      <div class="body"><b>${esc(catInfo(e.category).label)} × ${esc(e.quantity)}</b>
-      <small>${esc([e.type,e.size].filter(Boolean).join(" · ")||"—")}</small></div></div>`).join("")
-      :`<div class="muted tiny">No equipment recorded.</div>`}
+    ${eq.length?eq.map(eqLine).join(""):`<div class="muted tiny">No equipment recorded.</div>`}
     <div class="panel" style="margin-top:12px">
       <div class="eyebrow">This will release</div>
       <div class="kv"><span>Storage</span><b>${esc(s.storage_number)} → free</b></div>
@@ -1224,9 +1490,15 @@ function freeRoom(r){
 }
 function releaseAll(s,next){
   const r=room(s.room_id);
-  const cards=new Set(cardsOfStorage(s.id));
   s.room_id=null; s.status=next; s.updated_at=now();
-  if(r && !storagesOfRoom(r.id).length) cardsOfRoom(r.id).forEach(c=>cards.add(c));
+  const rest=r?storagesOfRoom(r.id):[];
+  const cards=new Set();
+  if(rest.length){      // the guest still has items elsewhere: the cards stay, pointing at another location
+    cardsOfStorage(s.id).forEach(c=>{ c.storage_id=rest[0].id; c.updated_at=now(); });
+  }else{
+    cardsOfStorage(s.id).forEach(c=>cards.add(c));
+    if(r) cardsOfRoom(r.id).forEach(c=>cards.add(c));
+  }
   cards.forEach(c=>{
     c.last_room_id=c.room_id??(r?r.id:null); c.last_storage_id=c.storage_id??s.id;
     c.room_id=null; c.storage_id=null; c.status="released"; c.released_at=now(); c.updated_at=now();
@@ -1238,11 +1510,11 @@ function releaseAll(s,next){
 function doFinalOut(id,next){
   const s=stor(+id); if(!s){ closeSheet(); home(); return; }
   const r=room(s.room_id), eq=eqOf(s.id), guest=r?.guest_name||"";
-  const manifest=eq.map(e=>`${catInfo(e.category).label} ×${e.quantity}`).join(", ")||"no items";
+  const list=manifest(s)||"no items";
   const prev=stInfo(s.status).label, roomId=s.room_id;
   const n=releaseAll(s,next);
   log("Checked out & released",{storage_id:s.id,room_id:roomId,prev,next:stInfo(next).label,
-    notes:`${manifest} · ${n} card${n===1?"":"s"} released${r?" · room "+r.room_number:""}${guest?" · "+guest:""}`});
+    notes:`${list} · ${n} card${n===1?"":"s"} released${r?" · room "+r.room_number:""}${guest?" · "+guest:""}`});
   save(); closeSheet(); toast("Checked out · "+s.storage_number+" released");
   home();
 }
@@ -1321,40 +1593,132 @@ function doRelease(id){
    ========================================================================== */
 VIEWS.room = (p) => {
   const r=room(p.id); if(!r) return {title:"Room", body:`<div class="empty">Room not found.</div>`};
-  const cards=cardsOfRoom(r.id), sts=storagesOfRoom(r.id);
+  const cards=cardsOfRoom(r.id), sts=storagesOfRoom(r.id).sort(byNumber);
+  const items=sts.reduce((a,s)=>a+eqCount(s.id),0);
+  const inHall=sts.filter(s=>s.status!=="guest_using"&&eqCount(s.id)), out=sts.filter(s=>s.status==="guest_using");
+  const scanned=p.card_id?card(p.card_id):null;
   return {title:"Room "+r.room_number, sub:guestOf(r)?esc(guestOf(r)):(r.status==="checked_out"?"Checked out":"No guest name"),
   body:`
+    ${scanned?`<div class="panel" style="border-color:var(--st-ready);margin-bottom:12px"><div class="row between"><div><div class="eyebrow">Card scanned</div>
+      <div class="mono" style="font-size:17px;font-weight:700">${esc(scanned.card_code)}</div></div><span class="chip solid s-ready">Match</span></div></div>`:""}
     ${p.notice?`<div class="alert" style="margin-bottom:12px"><span>⚠️</span><span><b>Heads up</b><p>${esc(p.notice)}</p></span></div>`:""}
     <div class="panel">
       <div class="row between"><b class="num" style="font-size:34px">Room ${esc(r.room_number)}</b>
-        ${sts[0]?`<span class="tag">${esc(sts[0].storage_number)}</span>`:`<span class="tag ghost">No storage</span>`}</div>
+        ${r.vip&&r.status!=="checked_out"?`<span class="chip solid s-preparing">VIP</span>`:""}</div>
       <div style="margin-top:12px">
         <div class="kv"><span>Guest</span><b>${esc(guestOf(r)||"—")}</b></div>
-        <div class="kv"><span>Key cards</span><b>${cards.length}</b></div>
         <div class="kv"><span>Departure</span><b>${r.departure?fmtDay(r.departure)+(daysTo(r.departure)===0?" · today":daysTo(r.departure)<0?" · overdue":""):"Not set"}</b></div>
-        <div class="kv"><span>Storages</span><b>${sts.length}</b></div>
-        <div class="kv"><span>Equipment</span><b>${sts.reduce((a,s)=>a+eqCount(s.id),0)} items</b></div>
+        <div class="kv"><span>Locations</span><b>${sts.map(s=>esc(s.storage_number)).join(", ")||"—"}</b></div>
+        <div class="kv"><span>Equipment</span><b>${items} item${items===1?"":"s"}${out.length?` · ${out.length} with the guest`:""}</b></div>
+        <div class="kv"><span>Key cards</span><b>${cards.length}</b></div>
       </div>
+      <button class="btn ghost sm" style="width:100%;margin-top:10px" data-act="edit-room" data-id="${r.id}">Edit guest · departure · VIP</button>
     </div>
-    <h2 class="sec">Storages</h2>
-    <div class="list">${sts.map(s=>storageRow(s)).join("")||`<div class="empty">No storage assigned to this room.</div>`}</div>
+
+    <div class="btn-grid" style="margin-top:12px">
+      <button class="btn primary" data-act="nav-stow" data-room="${r.id}" style="grid-column:1/-1">Check in equipment</button>
+      ${out.length?`<button class="btn go" data-act="room-return" data-id="${r.id}" style="grid-column:1/-1">Return equipment · ${out.length}</button>`:""}
+      ${inHall.length?`<button class="btn" data-act="room-hand" data-id="${r.id}" style="grid-column:1/-1">Hand to guest · ${inHall.length}</button>`:""}
+      ${sts.length?`<button class="btn go" data-act="room-out" data-id="${r.id}" style="grid-column:1/-1">Check out &amp; release all</button>`:""}
+    </div>
+
+    <h2 class="sec">Equipment by location · ${sts.length}</h2>
+    ${sts.map(s=>`<div class="panel" style="padding:10px 12px">
+      <button class="row between" style="width:100%;padding:0;margin-bottom:${eqOf(s.id).length?"8px":"0"}" data-act="nav" data-view="storage" data-id="${s.id}">
+        <span class="row"><span class="tag sm">${esc(s.storage_number)}</span><span class="muted tiny">${esc(s.section||"")}</span></span>
+        <span class="row">${statusChip(s.status)}<span class="arr" style="color:var(--dim)">›</span></span></button>
+      ${eqOf(s.id).map(eqLine).join("")||`<div class="muted tiny">Empty</div>`}</div>`).join("")
+      ||`<div class="empty"><span class="ic">🎿</span>Nothing checked in for this room.</div>`}
+
     <h2 class="sec">Key cards · ${cards.length}</h2>
     <div class="pill-list">${cards.map(c=>`<span class="pill">${esc(c.card_code)}<button class="x" data-act="unlink-card" data-id="${c.id}">✕</button></span>`).join("")||`<span class="muted">None yet.</span>`}</div>
-    <div class="btn-grid one" style="margin-top:12px">
-      <button class="btn primary" data-act="scan" data-ctx="add_card" data-room="${r.id}" data-storage="${sts[0]?sts[0].id:""}">+ Add key card</button>
-      ${sts[0]?`<div class="btn-grid" style="margin-top:0">
-        <button class="btn" data-act="checkin-here" data-id="${sts[0].id}">Check in</button>
-        <button class="btn" data-act="checkout-eq" data-id="${sts[0].id}">Check out</button></div>`:
-        `<button class="btn" data-act="assign-free" data-room="${r.id}">Assign a storage</button>`}
-    </div>
+    <button class="btn" style="margin-top:10px" data-act="scan" data-ctx="add_card" data-room="${r.id}" data-storage="${sts[0]?sts[0].id:""}">+ Add key card</button>
     <h2 class="sec">Room history</h2>
-    <div class="hist">${DB.history.filter(h=>h.room_id===r.id).slice(0,8).map(histEvent).join("")||`<div class="muted">Nothing logged yet.</div>`}</div>`};
+    <div class="hist">${DB.history.filter(h=>h.room_id===r.id).slice(0,8).map(histEvent).join("")||`<div class="muted">Nothing logged yet.</div>`}</div>`,
+  after(){
+    if(p.intent==="checkout"){ p.intent=null;
+      if(out.length) confirmRoomReturn(r.id); else if(inHall.length) confirmRoomHand(r.id); }
+  }};
 };
+/* ---- whole-room actions: the guest's items sit in several locations ---- */
+function openEditRoom(id){
+  const r=room(id); if(!r) return;
+  openSheet(`<h3>Room ${esc(r.room_number)}</h3><p class="sub">Guest details for this stay</p>
+    <label class="f"><span>Guest name</span><input class="input" id="erGuest" value="${esc(guestOf(r))}"></label>
+    <label class="f"><span>Hotel departure</span><input class="input" id="erOut" type="date" value="${r.status!=="checked_out"?esc(r.departure||""):""}"></label>
+    <label class="check"><input type="checkbox" id="erVip" ${r.vip&&r.status!=="checked_out"?"checked":""}> VIP guest</label>
+    <div class="btn-grid" style="margin-top:8px"><button class="btn" data-act="close-sheet">Cancel</button>
+      <button class="btn primary" data-act="do-edit-room" data-id="${r.id}">Save</button></div>`);
+}
+function doEditRoom(id){
+  const r=room(id); if(!r){ closeSheet(); return; }
+  r.guest_name=$("#erGuest").value.trim(); r.departure=$("#erOut").value; r.vip=!!$("#erVip").checked;
+  if(r.status==="checked_out" && (r.guest_name||storagesOfRoom(r.id).length)) r.status="staying";
+  r.updated_at=now(); log("Room updated",{room_id:r.id,notes:[r.guest_name,r.departure,r.vip?"VIP":""].filter(Boolean).join(" · ")});
+  save(); closeSheet(); toast("Room updated"); render();
+}
+function confirmRoomHand(id){
+  const r=room(id), sts=storagesOfRoom(id).filter(s=>s.status!=="guest_using"&&eqCount(s.id)).sort(byNumber);
+  if(!sts.length) return;
+  openSheet(`<h3>Hand to guest</h3><p class="sub">Room ${esc(r.room_number)} · take these out:</p>
+    ${sts.map(s=>eqOf(s.id).map(eqLine).join("")).join("")}
+    <div class="btn-grid" style="margin-top:14px"><button class="btn" data-act="close-sheet">Cancel</button>
+      <button class="btn primary" data-act="do-room-hand" data-id="${r.id}">Handed over</button></div>`);
+}
+function doRoomHand(id){
+  const sts=storagesOfRoom(id).filter(s=>s.status!=="guest_using"&&eqCount(s.id));
+  sts.forEach(s=>{ setStorageStatus(s,"guest_using","Handed to guest");
+    log("Equipment checked out",{storage_id:s.id,room_id:s.room_id,notes:manifest(s)}); });
+  save(); closeSheet(); toast(sts.length+" location"+(sts.length===1?"":"s")+" handed out"); render();
+}
+function confirmRoomReturn(id){
+  const r=room(id), sts=storagesOfRoom(id).filter(s=>s.status==="guest_using").sort(byNumber);
+  if(!sts.length) return;
+  openSheet(`<h3>Return equipment</h3><p class="sub">Room ${esc(r.room_number)} · put each item back:</p>
+    ${sts.map(s=>eqOf(s.id).map(eqLine).join("")).join("")}
+    <div class="btn-grid" style="margin-top:14px">
+      <button class="btn" data-act="do-room-return" data-id="${r.id}" data-next="preparing">Returned · drying</button>
+      <button class="btn go" data-act="do-room-return" data-id="${r.id}" data-next="occupied">Returned · stored</button></div>
+    <button class="btn ghost" style="margin-top:10px" data-act="close-sheet">Cancel</button>`);
+}
+function doRoomReturn(id,next){
+  const sts=storagesOfRoom(id).filter(s=>s.status==="guest_using");
+  sts.forEach(s=>{ setStorageStatus(s,next,"Returned by guest"); log("Equipment returned",{storage_id:s.id,room_id:s.room_id,next:stInfo(next).label}); });
+  save(); closeSheet(); toast("Equipment returned"); render();
+}
+function confirmRoomOut(id){
+  const r=room(id), sts=storagesOfRoom(id).sort(byNumber); if(!r||!sts.length) return;
+  openSheet(`<h3>Check out &amp; release</h3><p class="sub">Room ${esc(r.room_number)} · everything goes home with the guest</p>
+    ${sts.map(s=>eqOf(s.id).map(eqLine).join("")||`<div class="muted tiny">${esc(s.storage_number)}: no equipment recorded</div>`).join("")}
+    <div class="panel" style="margin-top:12px">
+      <div class="eyebrow">This will release</div>
+      <div class="kv"><span>Locations</span><b>${sts.map(s=>esc(s.storage_number)).join(", ")} → free</b></div>
+      <div class="kv"><span>Key cards</span><b>${cardsOfRoom(r.id).length} unlinked</b></div>
+    </div>
+    <p class="hint">Everything stays in the history, photos included. Scanning the card again starts a fresh check-in.</p>
+    <div class="btn-grid" style="margin-top:14px">
+      <button class="btn" data-act="do-room-out" data-id="${r.id}" data-next="preparing">Release · needs cleaning</button>
+      <button class="btn go" data-act="do-room-out" data-id="${r.id}" data-next="available">Release · free now</button></div>
+    <button class="btn ghost" style="margin-top:10px" data-act="close-sheet">Cancel</button>`);
+}
+function doRoomOut(id,next){
+  const r=room(id); if(!r){ closeSheet(); home(); return; }
+  const sts=storagesOfRoom(id), guest=r.guest_name||"", num=r.room_number;
+  let n=0;
+  sts.forEach(s=>{
+    const list=manifest(s)||"no items", prev=stInfo(s.status).label;
+    const c=releaseAll(s,next); n+=c;
+    log("Checked out & released",{storage_id:s.id,room_id:id,prev,next:stInfo(next).label,
+      notes:`${list}${c?` · ${c} card${c===1?"":"s"} released`:""} · room ${num}${guest?" · "+guest:""}`});
+  });
+  save(); closeSheet(); toast(`Room ${num} checked out · ${sts.length} location${sts.length===1?"":"s"} released`);
+  home();
+}
 function storageRow(s){
   const r=room(s.room_id), st=stInfo(s.status);
   return `<button class="item" data-act="nav" data-view="storage" data-id="${s.id}">
     <span class="tag sm">${esc(s.storage_number)}</span>
-    <span class="body"><b>${r?"Room "+esc(r.room_number):"No room"}</b><small>${esc(s.section||"—")} · ${eqCount(s.id)} items</small></span>
+    <span class="body"><b>${r?"Room "+esc(r.room_number):"No room"}</b><small>${esc(s.section||"—")} · ${eqOf(s.id).map(eqLabel).join(", ")||"empty"}</small></span>
     <span class="chip s-${esc(s.status)}"><i class="dot"></i>${esc(st.label)}</span><span class="arr">›</span></button>`;
 }
 VIEWS.rooms = (p={}) => {
@@ -1374,7 +1738,7 @@ function roomRow(r){
   const sts=storagesOfRoom(r.id);
   return `<button class="item" data-act="nav" data-view="room" data-id="${r.id}">
     <span class="body"><b>Room ${esc(r.room_number)}</b><small>${r.status==="checked_out"&&!cardsOfRoom(r.id).length?"Checked out":`${esc(guestOf(r)||"—")} · ${cardsOfRoom(r.id).length} cards`}</small></span>
-    ${sts[0]?`<span class="tag sm">${esc(sts[0].storage_number)}</span>`:`<span class="tag sm ghost">—</span>`}<span class="arr">›</span></button>`;
+    ${sts[0]?`<span class="tag sm">${esc(sts[0].storage_number)}${sts.length>1?" +"+(sts.length-1):""}</span>`:`<span class="tag sm ghost">—</span>`}<span class="arr">›</span></button>`;
 }
 
 /* ==========================================================================
@@ -1404,14 +1768,16 @@ VIEWS.map = () => {
     body:`<div class="empty"><span class="ic">🗺️</span>No locations to draw yet.</div>
       <button class="btn primary" data-act="nav" data-view="setup">Set up storage locations</button>`};
   return {title:"Storage map", sub:"Physical hall layout",
-  body:`<div class="legend">${Object.entries(STATUS).map(([k,v])=>`<span><i style="background:${v.c}"></i>${v.label}</span>`).join("")}</div>
-    ${sections.map(sec=>`<div class="map-area"><h2 class="sec">${esc(sec)}</h2>
+  body:`${hallPlan()?`<div style="margin-bottom:14px">${hallPlan()}</div><div class="hint" style="margin:-6px 0 14px">Tap an area to jump to its locations.</div>`:""}
+    <div class="legend">${Object.entries(STATUS).map(([k,v])=>`<span><i style="background:${v.c}"></i>${v.label}</span>`).join("")}</div>
+    ${sections.map(sec=>{ const rows=DB.storages.filter(s=>(s.section||"Unassigned area")===sec), k=rows.map(kindOf).find(Boolean);
+      return `<div class="map-area" id="area-${esc(normCode(sec))}"><h2 class="sec">${esc(sec)}${k&&KINDS[k]!==sec?` · ${esc(KINDS[k])}`:""} · ${rows.filter(isFree).length} free</h2>
       <div class="map-grid">${DB.storages.filter(s=>(s.section||"Unassigned area")===sec).sort((a,b)=>String(a.storage_number).localeCompare(String(b.storage_number),undefined,{numeric:true})).map(s=>`
         <button class="cell on" style="--c:${stInfo(s.status).c}" data-act="nav" data-view="storage" data-id="${s.id}">
           <span class="n">${esc(s.storage_number)}</span>
           <span class="k">${room(s.room_id)?"R"+esc(room(s.room_id).room_number):"free"}</span>
-          ${eqCount(s.id)?`<span class="k" style="color:var(--frost)">${eqCount(s.id)} items</span>`:""}
-        </button>`).join("")}</div></div>`).join("")}`};
+          ${eqCount(s.id)?`<span class="k" style="color:var(--frost)">${eqOf(s.id).map(e=>catInfo(e.category).ic).join("")}</span>`:""}
+        </button>`).join("")}</div></div>`; }).join("")}`};
 };
 VIEWS.active = () => {
   const groups=[["ready","Ready for guest"],["guest_using","With the guest"],["occupied","Stored"],["preparing","Preparing"],["attention","Needs attention"]];
@@ -1440,7 +1806,7 @@ VIEWS.departures = () => {
   const band = d => d<0?["Overdue","hot"] : d===0?["Leaving today",""] : d===1?["Tomorrow",""] : ["In "+d+" days",""];
   return {title:"Departures", sub:rows.length+" rooms with equipment",
   body: rows.length? rows.map(({r,d,sts})=>{
-    const [lbl,hot]=band(d), s=sts[0], items=sts.reduce((a,x)=>a+eqCount(x.id),0);
+    const [lbl,hot]=band(d), items=sts.reduce((a,x)=>a+eqCount(x.id),0);
     return `<div class="panel" style="margin-bottom:10px;border-left:4px solid ${d<0?"var(--st-attention)":d===0?"var(--st-preparing)":"var(--line)"}">
       <div class="row between" style="flex-wrap:wrap;gap:8px">
         <b class="num" style="font-size:26px">Room ${esc(r.room_number)}</b>
@@ -1451,8 +1817,8 @@ VIEWS.departures = () => {
       <div class="kv"><span>Still stored</span><b>${items} item${items===1?"":"s"}</b></div>
       <div class="kv"><span>Key cards</span><b>${cardsOfRoom(r.id).length}</b></div>
       <div class="btn-grid" style="margin-top:12px">
-        <button class="btn ghost" data-act="nav" data-view="storage" data-id="${s.id}">Open storage</button>
-        <button class="btn go" data-act="final-out" data-id="${s.id}">Check out &amp; release</button>
+        <button class="btn ghost" data-act="nav" data-view="room" data-id="${r.id}">Open room</button>
+        <button class="btn go" data-act="room-out" data-id="${r.id}">Check out &amp; release</button>
       </div></div>`;
   }).join("") : `<div class="empty"><span class="ic">📅</span>No departures with equipment in the hall.<br>Add a departure date when you register a card and rooms will show up here.</div>`};
 };
@@ -1469,7 +1835,8 @@ VIEWS.setup = () => {
     <div class="panel">
       <div class="eyebrow">Create a rack row</div>
       <p class="muted tiny" style="margin:6px 0 14px">Generate a whole range at once — for example S-101 to S-112 in the main hall.</p>
-      <label class="f"><span>Area name</span><input class="input" id="hArea" placeholder="Area name" ${admin?"":"disabled"}></label>
+      <label class="f"><span>Area name</span><input class="input" id="hArea" placeholder="Boots 1" ${admin?"":"disabled"}></label>
+      <label class="f"><span>Holds</span><select class="input" id="hKind" ${admin?"":"disabled"}>${kindOpts("")}</select></label>
       <label class="f"><span>Prefix</span><input class="input" id="hPfx" value="S-" autocapitalize="characters" ${admin?"":"disabled"}></label>
       <div class="btn-grid" style="gap:10px">
         <label class="f" style="margin:0"><span>From</span><input class="input" id="hFrom" inputmode="numeric" placeholder="101" ${admin?"":"disabled"}></label>
@@ -1481,16 +1848,18 @@ VIEWS.setup = () => {
 
     ${admin && SkiSync.missingLayout(DB).length?`<div class="panel" style="margin-top:12px">
       <div class="eyebrow">Default storage map</div>
-      <p class="muted tiny" style="margin:6px 0 14px">${SkiSync.missingLayout(DB).length} standard locations are missing (Main Hall S-101–112, Ski Wall S-120–131, Boot Room S-201–208). They are created empty and available.</p>
+      <p class="muted tiny" style="margin:6px 0 14px">${SkiSync.missingLayout(DB).length} standard locations are missing (${esc([...new Set(SkiSync.missingLayout(DB).map(x=>x.section))].join(", "))}). They are created empty and available.</p>
       <button class="btn" data-act="load-layout">Restore default layout</button>
     </div>`:""}
 
     <h2 class="sec">Areas ${sections.length?`· ${sections.length}`:""}</h2>
     ${sections.length? sections.map(sec=>{
       const rows=DB.storages.filter(s=>(s.section||"Unassigned area")===sec), busy=rows.filter(s=>s.status!=="available").length;
-      return `<div class="item">
-        <span class="body"><b>${esc(sec)}</b><small>${rows.length} locations · ${busy} in use</small></span>
-        ${admin?`<button class="btn sm danger" data-act="drop-area" data-sec="${esc(sec)}">Delete</button>`:""}</div>`;
+      const k=rows.map(kindOf).find(Boolean)||"";
+      return `<div class="item" style="flex-wrap:wrap">
+        <span class="body"><b>${esc(sec)}</b><small>${rows.length} locations · ${busy} in use · ${esc(KINDS[k]||"type not set — not used automatically")}</small></span>
+        ${admin?`<select class="input" style="width:auto;min-height:42px;font-size:15px" data-area-kind="${esc(sec)}" aria-label="Holds">${kindOpts(k)}</select>
+          <button class="btn sm danger" data-act="drop-area" data-sec="${esc(sec)}">Delete</button>`:""}</div>`;
     }).join("") : `<div class="empty"><span class="ic">🏗️</span>No locations yet.<br>Create your first rack row above.</div>`}
 
     <h2 class="sec">Data</h2>
@@ -1500,8 +1869,15 @@ VIEWS.setup = () => {
     <div class="hint">Erasing keeps the staff accounts and removes every room, card, storage and item.</div>`,
   after(){ if(SESSION.role==="admin") setTimeout(()=>$("#hArea")?.focus(),80); }};
 };
+const kindOpts = sel => `<option value="">Type not set</option>`+Object.entries(KINDS).map(([k,l])=>`<option value="${k}" ${k===sel?"selected":""}>${esc(l)}</option>`).join("");
+document.addEventListener("change",e=>{
+  const sec=e.target.dataset && e.target.dataset.areaKind; if(sec==null || !SESSION || SESSION.role!=="admin") return;
+  const k=e.target.value;
+  DB.storages.filter(s=>(s.section||"Unassigned area")===sec).forEach(s=>{ if(k) s.kind=k; else delete s.kind; s.updated_at=now(); });
+  log("Area type changed",{notes:`${sec} → ${KINDS[k]||"not set"}`}); save(); toast(sec+" holds "+(KINDS[k]||"—")); render();
+});
 function makeRange(){
-  const area=$("#hArea").value.trim()||"Unassigned area";
+  const area=$("#hArea").value.trim()||"Unassigned area", kind=$("#hKind").value;
   const pfx=$("#hPfx").value.trim().toUpperCase();
   const from=parseInt($("#hFrom").value,10), to=parseInt($("#hTo").value,10);
   if(SESSION.role!=="admin"){ toast("Admins only","err"); return; }
@@ -1510,8 +1886,9 @@ function makeRange(){
   let made=0;
   for(let i=from;i<=to;i++){
     const num=pfx+i; if(storByNumber(num)) continue;
-    DB.storages.push({id:uid(),storage_number:num,section:area,status:"available",room_id:null,created_at:now(),updated_at:now()});
-    made++;
+    const s={id:uid(),storage_number:num,section:area,status:"available",room_id:null,created_at:now(),updated_at:now()};
+    if(kind) s.kind=kind;
+    DB.storages.push(s); made++;
   }
   if(!made){ toast("Those locations already exist","info"); return; }
   log("Locations created",{notes:`${made} × ${pfx}${from}–${pfx}${to} in ${area}`});
@@ -1699,7 +2076,7 @@ document.addEventListener("click", e=>{
         <button class="btn danger" data-act="do-wipe">Erase everything</button></div>`); break;
     case "do-wipe": { if(SESSION.role!=="admin") break; DB=normaliseDB(emptyDB(DB.users)); save(); closeSheet(); toast("Hall is empty now","info"); home(); break; }
     /* scan */
-    case "scan": go("scan",{ctx:el.dataset.ctx||"identify",room_id:el.dataset.room?+el.dataset.room:null,storage_id:el.dataset.storage?+el.dataset.storage:null}); break;
+    case "scan": closeSheet(); go("scan",{ctx:el.dataset.ctx||"identify",room_id:el.dataset.room?+el.dataset.room:null,storage_id:el.dataset.storage?+el.dataset.storage:null}); break;
     case "nfc-start": startNFC(); break;
     case "native-scan": askNativeScan(); break;
     case "submit-code": submitCode(); break;
@@ -1713,7 +2090,10 @@ document.addEventListener("click", e=>{
     case "save-card": saveNewCard(el.dataset.code, el.dataset.next); break;
     /* equipment */
     case "add-eq": openEqSheet(id); break;
-    case "quick-eq": openCheckinSheet(id); break;
+    case "plan-area": { const t=document.getElementById("area-"+normCode(el.dataset.area));
+      if(t) t.scrollIntoView({behavior:"smooth",block:"start"}); else go("map",{}); break; }
+    case "eq-edit": { const eq=DB.equipment.find(x=>x.id===id); if(eq) openEqSheet(eq.storage_id,eq.id); break; }
+    case "photo": openPhoto(el.dataset.id,el.dataset.c); break;
     case "eq-save": saveEq(el.dataset.storage, el.dataset.id?+el.dataset.id:null); break;
     case "eq-delete": { const eq=DB.equipment.find(x=>x.id===id); if(!eq){ closeSheet(); break; } DB.equipment=DB.equipment.filter(x=>x.id!==id);
       log("Equipment removed",{storage_id:eq.storage_id,notes:catInfo(eq.category).label}); save(); closeSheet(); toast("Equipment removed"); render(); break; }
@@ -1722,10 +2102,24 @@ document.addEventListener("click", e=>{
       if(+eq.quantity>1){ eq.quantity=+eq.quantity-1; eq.updated_at=now(); } else { DB.equipment=DB.equipment.filter(x=>x.id!==id);
         log("Equipment removed",{storage_id:eq.storage_id,notes:catInfo(eq.category).label}); }
       save(); render(); break; }
-    case "q-toggle": qToggle(el.dataset.k,+el.dataset.d); break;
+    /* check in by room */
+    case "nav-stow": go("stow",{room_id:+el.dataset.room}); break;
+    case "ci-add": { const p=stowParams(); if(!p) break; p.d.items.push(newItem(el.dataset.k)); drawItems();
+      const last=$$(".ci-item").pop(); if(last) last.scrollIntoView({block:"nearest",behavior:"smooth"}); break; }
+    case "ci-del": { const p=stowParams(); if(!p) break; p.d.touched=true; p.d.items=p.d.items.filter(i=>i.key!==+el.dataset.key); drawItems(); break; }
+    case "ci-unphoto": { const i=ciItem(el); if(i){ i.photo=null; i.photo_id=null; drawItems(); } break; }
+    case "ci-save": stowSave(); break;
+    /* whole room */
+    case "edit-room": openEditRoom(id); break;
+    case "do-edit-room": doEditRoom(id); break;
+    case "room-hand": confirmRoomHand(id); break;
+    case "do-room-hand": doRoomHand(id); break;
+    case "room-return": confirmRoomReturn(id); break;
+    case "do-room-return": doRoomReturn(id, el.dataset.next); break;
+    case "room-out": confirmRoomOut(id); break;
+    case "do-room-out": doRoomOut(id, el.dataset.next); break;
     /* workflows */
     case "checkin-here": openCheckinSheet(id); break;
-    case "do-checkin": doCheckin(id); break;
     case "checkout-eq": confirmCheckout(id); break;
     case "final-out": confirmFinalOut(id); break;
     case "do-final-out": doFinalOut(id, el.dataset.next); break;
@@ -1792,6 +2186,7 @@ function onRemoteChange(full){
   SESSION=u;
   const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
   if(!$("#modal").classList.contains("hidden") || typing){ staleView=true; return; }  // don't wipe what the user is doing
+  if(current().view==="stow"){ drawItems(); return; }   // keep the check-in form (and its scroll) as it is
   render();
 }
 document.addEventListener("focusout",()=>{ setTimeout(()=>{
