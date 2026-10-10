@@ -571,8 +571,17 @@ function kindsFor(item,vip){
     : item.category==="boots" ? ["boots"] : [];
   return vip ? ["vip",...k] : k;
 }
+/* may this item go in storage s? only in an area of its own kind (or VIP for a VIP guest) */
+const fitsItem = (item,s,vip) => !!s && kindsFor(item,vip).includes(kindOf(s));
+/* what a storage can hold, for adding equipment straight into it (null = area type not set) */
+function catsForStorage(s){
+  const k=kindOf(s);
+  return k==="boots"?["boots"] : k==="ski"?["skis"] : k==="snowboard"?["snowboard"]
+    : k==="ski_kids"?["skis","snowboard"] : k==="vip"?STORED : null;
+}
 /* picks a free location for every item without a manual choice; never twice the same */
 function autoAssign(items,vip){
+  items.forEach(i=>{ if(i.storage_id && !fitsItem(i,stor(i.storage_id),vip)) i.storage_id=null; });
   const taken=new Set(items.filter(i=>i.storage_id).map(i=>i.storage_id));
   const free=DB.storages.filter(isFree).sort(byNumber);
   items.forEach(i=>{
@@ -1228,10 +1237,11 @@ function roomHint(){
 function drawItems(){
   const p=stowParams(), box=$("#ciItems"); if(!p||!box) return;
   const d=p.d; autoAssign(d.items,d.vip);
-  const free=DB.storages.filter(isFree).sort(byNumber);
-  const areas=[...new Set(free.map(s=>s.section||"Unassigned area"))];
+  const freeAll=DB.storages.filter(isFree).sort(byNumber);
   box.innerHTML = d.items.map((i,n)=>{
     const c=catInfo(i.category), dest=stor(i.storage_id||i.auto);
+    const free=freeAll.filter(s=>fitsItem(i,s,d.vip)), areas=[...new Set(free.map(s=>s.section||"Unassigned area"))];
+    const want=kindsFor(i,false).map(k=>KINDS[k]).join(" / ");
     const usedByOthers=new Set(d.items.filter(x=>x!==i).map(x=>x.storage_id||x.auto).filter(Boolean));
     return `<div class="ci-item" data-key="${i.key}">
       <div class="hd"><span style="font-size:22px">${c.ic}</span><b>${esc(c.label)}</b>
@@ -1243,7 +1253,7 @@ function drawItems(){
         ${i.photo?`<button class="btn sm ghost" data-act="ci-unphoto" data-key="${i.key}">Remove</button>`:""}
       </div>
       <div class="dest"><span class="eyebrow">Storage</span>
-        ${dest?`<span class="tag sm">${esc(dest.storage_number)}</span>`:`<span class="chip solid s-attention">No free location</span>`}
+        ${dest?`<span class="tag sm">${esc(dest.storage_number)}</span>`:`<span class="chip solid s-attention">No free ${esc(want)} location</span>`}
         <select class="input" data-ci="storage_id" aria-label="Location">
           <option value="">${i.auto?"Automatic · "+esc(stor(i.auto).storage_number+" · "+(stor(i.auto).section||"")):"Automatic"}</option>
           ${areas.map(a=>`<optgroup label="${esc(a)}">${free.filter(s=>(s.section||"Unassigned area")===a&&!usedByOthers.has(s.id)).map(s=>
@@ -1272,7 +1282,7 @@ async function stowSave(){
   if(!r && !d.room.trim()){ toast("Enter the room number","err"); $("#ciRoom")?.focus(); return; }
   if(!d.items.length){ toast("Add at least one item","err"); return; }
   autoAssign(d.items,d.vip);
-  const lost=d.items.find(i=>!stor(i.storage_id||i.auto));
+  const lost=d.items.find(i=>!fitsItem(i,stor(i.storage_id||i.auto),d.vip));
   if(lost){ toast(`No free location for ${catInfo(lost.category).label.toLowerCase()} — free one or pick another area`,"err"); drawItems(); return; }
   const btn=$("#ciSave"); busy=true; if(btn) btn.disabled=true;
   try{
@@ -1358,7 +1368,6 @@ VIEWS.storage = (p) => {
         : `<button class="btn primary" data-act="checkin-here" data-id="${s.id}">Check in equipment</button>
            <button class="btn" data-act="checkout-eq" data-id="${s.id}" ${items?"":"disabled"}>Hand to guest</button>`}
       <button class="btn go" data-act="final-out" data-id="${s.id}" style="grid-column:1/-1" ${(items||cards.length)?"":"disabled"}>Check out &amp; release</button>
-      ${s.status==="occupied"||s.status==="preparing"?`<button class="btn go" data-act="set-ready" data-id="${s.id}" style="grid-column:1/-1">Mark ready for guest</button>`:""}
     </div>
 
     <div class="two-col"><div>
@@ -1411,14 +1420,15 @@ function eqRow(e){
 let eqPhoto=null;                          // photo taken in the equipment sheet, not uploaded yet
 function openEqSheet(storageId, editId){
   const e = editId?DB.equipment.find(x=>x.id===editId):null;
-  const cat = e&&CATS[e.category]?e.category:"boots";
-  const cats = STORED.includes(cat)?STORED:[...STORED,cat];
+  const fit = catsForStorage(stor(+storageId)) || STORED;
+  const cat = e&&CATS[e.category]?e.category:fit[0];
+  const cats = fit.includes(cat)?fit:[...fit,cat];
   eqPhoto=null;
   openSheet(`<h3>${e?"Edit equipment":"Add equipment"}</h3>
     <p class="sub">Storage ${esc(stor(+storageId)?.storage_number||"—")}</p>
     <label class="f"><span>Category</span>
       <select class="input" id="eCat">${cats.map(k=>`<option value="${k}" ${k===cat?"selected":""}>${CATS[k].ic}  ${CATS[k].label}</option>`).join("")}</select></label>
-    <label class="check"><input type="checkbox" id="eKids" ${e&&e.kids?"checked":""}> Kids use</label>
+    <label class="check"><input type="checkbox" id="eKids" ${(e?e.kids:kindOf(stor(+storageId))==="ski_kids")?"checked":""}> Kids use</label>
     <div class="ci-photo">
       <img id="eqPhotoImg" class="${e&&e.photo_id?"":"hidden"}" src="${e&&e.photo_id?photoUrl(e.photo_id):""}" alt="">
       <button class="btn sm" style="width:auto;flex:1" data-act="eq-cam">📷 ${e&&e.photo_id?"Retake photo":"Take photo"}</button></div>
@@ -1437,6 +1447,9 @@ async function saveEq(storageId,editId){
   if(busy) return;
   const cat=$("#eCat").value, kids=!!$("#eKids")?.checked;
   if(!stor(+storageId)){ toast("That storage no longer exists","err"); closeSheet(); render(); return; }
+  const fit=catsForStorage(stor(+storageId));
+  if(fit && !fit.includes(cat) && !(editId && DB.equipment.find(x=>x.id===+editId)?.category===cat)){
+    toast(`${catInfo(cat).label} doesn't go in ${stor(+storageId).section||"this area"}`,"err"); return; }
   let photo_id=null;
   if(eqPhoto){ busy=true;
     try{ photo_id=await uploadPhoto(eqPhoto); }catch(err){ toast(err.message,"err"); return; } finally{ busy=false; } }
@@ -2166,8 +2179,6 @@ document.addEventListener("click", e=>{
     case "do-checkout": doCheckout(id); break;
     case "return-eq": confirmReturn(id); break;
     case "do-return": doReturn(id, el.dataset.next); break;
-    case "set-ready": { const s=stor(id); if(!s) break; setStorageStatus(s,"ready","Prepared for guest");
-      log("Marked ready for guest",{storage_id:s.id,room_id:s.room_id}); save(); toast("Ready for guest"); render(); break; }
     case "set-status": openStatusSheet(id); break;
     case "pick-status": { const s=stor(id); if(!s){ closeSheet(); break; } setStorageStatus(s,el.dataset.s,"Manual change"); save(); closeSheet(); toast("Status updated"); render(); break; }
     case "assign-room": openAssignRoom(id); break;

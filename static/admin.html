@@ -127,6 +127,15 @@ td.sel input,th.sel input{width:18px;height:18px;margin:2px 0 0;accent-color:var
 tr.picked td{background:rgba(255,77,77,.08)}
 .bulkbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;padding:8px 12px;border:1px solid var(--st-attention);border-radius:var(--r-s);background:rgba(255,77,77,.07)}
 .warn{color:var(--st-attention)}
+.node-photos{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.node-photos img{width:180px;max-width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block;background:#060d15}
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:12px}
+.gallery .ph{background:var(--night);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
+.gallery .ph a,.gallery .ph .none{display:block;aspect-ratio:4/3;background:#060d15}
+.gallery .ph img{width:100%;height:100%;object-fit:cover;display:block}
+.gallery .ph .none{display:grid;place-items:center;color:var(--dim);font-size:12px}
+.gallery .ph div{padding:6px 8px;font-size:12px;line-height:1.35}
+.gallery .ph b{font-family:var(--display);font-size:15px;letter-spacing:.4px;display:block}
 .chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px;font-family:var(--display);font-weight:600;
   text-transform:uppercase;letter-spacing:1px;font-size:12px;background:var(--slab2);border:1px solid var(--line);white-space:nowrap}
 .chip .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
@@ -535,12 +544,30 @@ function traceStorage(s, why){
       <span class="arrow">→</span>
       <div class="node"><small>Storage · ${esc(s.section||"")}</small><b>${esc(s.storage_number)}</b> ${chip(s.status,STATUS[s.status]||s.status)}</div>
       <span class="arrow">→</span>
-      <div class="node"><small>Equipment</small><b>${eq.length?eq.map(e=>`${esc(CATS[e.category]||e.category)} ×${esc(e.quantity)}${e.photo_id?` <a href="${photoUrl(e.photo_id)}" target="_blank" rel="noopener" title="Photo">📷</a>`:""}`).join(", "):"empty"}</b></div>
+      <div class="node"><small>Equipment</small><b>${eq.length?eq.map(e=>`${esc(CATS[e.category]||e.category)}${e.kids?" (kids)":""} ×${esc(e.quantity)}`).join(", "):"empty"}</b>
+        ${eq.some(e=>e.photo_id)?`<div class="node-photos">${eq.filter(e=>e.photo_id).map(e=>`<a href="${photoUrl(e.photo_id)}" target="_blank" rel="noopener" title="Open full size"><img src="${photoUrl(e.photo_id)}" alt="${esc(CATS[e.category]||e.category)}" loading="lazy"></a>`).join("")}</div>`:""}</div>
     </div>
     ${roomCards.length?`<div class="issue"><div class="grow"><b>Room cards not linked to this storage</b>
       <p>${roomCards.map(c=>`${esc(c.card_code)} → ${c.storage_id?esc(stor(c.storage_id)?.storage_number||"deleted #"+c.storage_id):"no storage"}`).join(" · ")}</p></div>
       <button class="btn sm" data-act="link-room-cards" data-id="${s.id}">Link them here</button></div>`:""}
     <div class="hist" style="margin-top:12px">${hist.map(histEvent).join("")||`<div class="dim tiny">No history for this chain.</div>`}</div>
+  </div>`;
+}
+/* Earlier photos of a room, kept in the history (equipment records go when the guest
+   checks out, the photo stays). */
+function roomGallery(r){
+  const eq=storagesOfRoom(r.id).flatMap(s=>eqOf(s.id).map(e=>({e,s})))
+    .sort((a,b)=>String(a.s.storage_number).localeCompare(String(b.s.storage_number),undefined,{numeric:true}));
+  const now_ids=new Set(eq.map(x=>x.e.photo_id).filter(Boolean));
+  const past=DB.history.filter(h=>h.room_id===r.id&&h.photo_id&&!now_ids.has(h.photo_id));
+  const card=(pid,title,sub)=>`<div class="ph">${pid?`<a href="${photoUrl(pid)}" target="_blank" rel="noopener" title="Open full size"><img src="${photoUrl(pid)}" alt="${esc(title)}" loading="lazy"></a>`
+    :`<span class="none">No photo</span>`}<div><b>${esc(title)}</b><span class="dim">${sub}</span></div></div>`;
+  // photos of what is stored now are shown in each storage's Equipment box below
+  if(!past.length) return "";
+  return `<div class="panel" style="margin-bottom:12px">
+    ${past.length?`<div class="eyebrow dim tiny" style="margin:4px 0 8px">Earlier photos · ${past.length}</div>
+      <div class="gallery">${past.slice(0,40).map(h=>card(h.photo_id,h.notes||h.action,
+        `${esc(stor(h.storage_id)?.storage_number||"")} · ${esc(fmtDT(h.timestamp))}`)).join("")}</div>`:""}
   </div>`;
 }
 /* Click any row → everything behind it, without hunting for the room/storage link. */
@@ -558,6 +585,7 @@ function openDetail(col,id){
     body=`<div class="panel tiny" style="margin-bottom:12px">
         ${kv("Departure",esc(rec.departure||"—"))}${kv("Key cards",cs.map(c=>`<span class="mono">${esc(c.card_code)}</span>`).join(", ")||"—")}
         ${kv("Storages",sts.map(s=>esc(s.storage_number)).join(", ")||"—")}${kv("Items",sts.reduce((a,s)=>a+eqCount(s.id),0))}</div>
+      ${roomGallery(rec)}
       ${sts.map(s=>traceStorage(s,"Storage "+s.storage_number)).join("")
         ||`<div class="panel" style="margin-bottom:12px"><p class="muted tiny" style="margin:0 0 10px">No storage is linked to this room.</p>${H(DB.history.filter(h=>h.room_id===rec.id))}</div>`}`;
   } else if(col==="cards"){
@@ -663,7 +691,8 @@ const SCHEMA = {
     cols:[["Room",r=>`<b>${esc(r.room_number)}</b>`],["Guest",r=>esc(guestOf(r)||"—")],["Departure",r=>esc(r.status!=="checked_out"&&r.departure||"—")],
       ["Status",r=>chip(r.status||"staying",ROOM_STATUS[r.status]||r.status)],
       ["Storages",r=>storagesOfRoom(r.id).map(s=>storLabel(s.id)).join(", ")||`<span class="dim">—</span>`],
-      ["Cards",r=>cardsOfRoom(r.id).length],["Updated",r=>ago(r.updated_at)]],
+      ["Cards",r=>cardsOfRoom(r.id).length],
+      ["Photos",r=>{ const n=storagesOfRoom(r.id).flatMap(s=>eqOf(s.id)).filter(e=>e.photo_id).length; return n?`📷 ${n}`:`<span class="dim">—</span>`; }],["Updated",r=>ago(r.updated_at)]],
     text:r=>[r.id,r.room_number,r.guest_name,r.departure,r.status].join(" "),
     sort:byRoom,
     unique:(v,rec)=>DB.rooms.some(r=>r!==rec&&String(r.room_number??"").trim().toLowerCase()===String(v.room_number).trim().toLowerCase())&&`Room ${v.room_number} already exists`,
