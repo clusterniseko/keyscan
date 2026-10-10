@@ -192,6 +192,11 @@ h2.sec::after{content:"";flex:1;height:1px;background:var(--line)}
 .legend{display:flex;flex-wrap:wrap;gap:8px 14px;margin-bottom:14px}
 .legend span{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--mist);letter-spacing:.6px;text-transform:uppercase}
 .legend i{width:10px;height:10px;border-radius:3px;display:block}
+/* storage map: compact cells so a whole area fits on a phone screen */
+#mapCells .map-grid{grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:6px}
+#mapCells .cell{aspect-ratio:auto;min-height:52px;border-radius:10px;gap:2px}
+#mapCells .cell .n{font-size:16px}
+#mapCells .cell::before{height:4px}
 
 /* ---------- forms ---------- */
 label.f{display:block;margin-bottom:12px}
@@ -436,33 +441,73 @@ const KINDS = {boots:"Boots", ski:"Ski", ski_kids:"Ski kids", snowboard:"Snowboa
 /* The hall as drawn on the floor plan (viewBox 100 × 54). Keyed by area name: an
    area renamed in Hall setup simply drops off the drawing, nothing breaks. */
 const HALL_PLAN = {
-  "Boots 1":  {x:2,  y:4,  w:28, h:10, where:"top row, left"},
-  "Boots 2":  {x:33, y:4,  w:17, h:10, where:"top row, middle"},
-  "Snowboard":{x:53, y:4,  w:14, h:10, where:"top row, right"},
-  "Ski 1":    {x:68, y:4,  w:9,  h:10, where:"top row, next to Snowboard"},
-  "Ski 2":    {x:84, y:4,  w:9,  h:44, where:"right wall"},
-  "Boots 3":  {x:2,  y:38, w:26, h:10, where:"bottom row, left"},
-  "Boots 4":  {x:33, y:38, w:11, h:10, where:"bottom row, between the doors"},
-  "VIP":      {x:49, y:38, w:9,  h:10, where:"bottom row, after the 2nd door"},
-  "Ski Kids": {x:58, y:38, w:18, h:10, where:"bottom row, right"}
+  "Boots 1":  {x:2,  y:3,  w:27, h:12, where:"top row, left"},
+  "Boots 2":  {x:32, y:3,  w:17, h:12, where:"top row, middle"},
+  "Snowboard":{x:52, y:3,  w:16, h:12, where:"top row, right"},
+  "Ski 1":    {x:70, y:3,  w:10, h:12, where:"top row, next to Snowboard"},
+  "Ski 2":    {x:86, y:3,  w:11, h:46, where:"right wall"},
+  "Boots 3":  {x:2,  y:37, w:27, h:12, where:"bottom row, left"},
+  "Boots 4":  {x:32, y:37, w:15, h:12, where:"bottom row, middle"},
+  "VIP":      {x:50, y:37, w:11, h:12, where:"bottom row, next to Kids"},
+  "Ski Kids": {x:63, y:37, w:20, h:12, where:"bottom row, right"}
 };
-const DOORS = [[28,5],[44,5],[76,6]];          // gaps in the bottom row: [x, width]
+const KIND_COLOR = {boots:"#A98BF5", ski:"#5EC8F2", ski_kids:"#35C36A", snowboard:"#F0A93B", vip:"#FF6A2B"};
 const whereOf = s => HALL_PLAN[s && s.section] ? HALL_PLAN[s.section].where : "";
-/* mini floor plan: every area with its free count; mark = area names to highlight */
+/* mini floor plan, areas tinted by what they hold; mark = area names to highlight */
 function hallPlan(mark){
   const areas=Object.keys(HALL_PLAN).filter(a=>DB.storages.some(s=>s.section===a));
   if(!areas.length) return "";
-  const hi=new Set(mark||[]);
-  return `<svg viewBox="0 0 100 54" role="img" aria-label="Hall plan" style="width:100%;display:block;background:var(--slab);border:1px solid var(--line);border-radius:14px">
-    ${DOORS.map(([x,w])=>`<rect x="${x}" y="47" width="${w}" height="2" fill="var(--signal)" opacity=".7"/><text x="${x+w/2}" y="53" text-anchor="middle" font-size="2.6" fill="var(--dim)">DOOR</text>`).join("")}
-    ${areas.map(a=>{ const p=HALL_PLAN[a], rows=DB.storages.filter(s=>s.section===a), f=rows.filter(isFree).length, on=hi.has(a);
-      const cx=p.x+p.w/2, cy=p.y+p.h/2, tall=p.h>p.w*2, room=tall?p.h:p.w;
-      const fs=Math.min(3,room/a.length*1.6), free=room<16?`${f}/${rows.length}`:`${f}/${rows.length} free`;
-      return `<g data-act="plan-area" data-area="${esc(a)}" style="cursor:pointer">
-        <rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" rx="1.5" fill="${on?"rgba(255,106,43,.35)":"var(--slab2)"}" stroke="${on?"var(--signal)":f?"var(--line)":"var(--st-attention)"}" stroke-width="${on?.8:.4}"/>
-        <text x="${cx}" y="${cy-(tall?2:.6)}" text-anchor="middle" font-size="${fs.toFixed(2)}" font-weight="700" fill="var(--frost)" ${tall?`transform="rotate(-90 ${cx} ${cy-2})"`:""}>${esc(a)}</text>
-        <text x="${cx}" y="${cy+(tall?8:3.6)}" text-anchor="middle" font-size="2.6" fill="${f?"var(--mist)":"#FF8080"}">${free}</text></g>`; }).join("")}
-  </svg>`;
+  const hi=new Set(mark||[]), any=hi.size>0;
+  const kinds=[...new Set(areas.map(a=>kindOf(DB.storages.find(s=>s.section===a))).filter(Boolean))];
+  return `<svg viewBox="0 0 100 52" role="img" aria-label="Hall plan" style="width:100%;display:block;background:var(--night);border:1px solid var(--line);border-radius:14px">
+    ${areas.map(a=>{ const p=HALL_PLAN[a], k=kindOf(DB.storages.find(s=>s.section===a)), c=KIND_COLOR[k]||"#90A4B8", on=hi.has(a);
+      const cx=p.x+p.w/2, cy=p.y+p.h/2, tall=p.h>p.w*2, room=(tall?p.h:p.w)-2;
+      const fs=Math.min(3.4,room/Math.max(a.length,1)*1.7);
+      return `<g data-act="plan-area" data-area="${esc(a)}" style="cursor:pointer" opacity="${any&&!on?.35:1}">
+        <rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" rx="1.6" fill="${c}" fill-opacity="${on?.55:.22}" stroke="${on?"#fff":c}" stroke-width="${on?.9:.45}"/>
+        <text x="${cx}" y="${cy}" dy="${(fs*.35).toFixed(2)}" text-anchor="middle" font-size="${fs.toFixed(2)}" font-weight="700" fill="#F1F7FC"
+          ${tall?`transform="rotate(-90 ${cx} ${cy})"`:""}>${esc(a)}</text></g>`; }).join("")}
+  </svg>
+  <div class="legend" style="margin:8px 0 0">${kinds.map(k=>`<span><i style="background:${KIND_COLOR[k]}"></i>${esc(KINDS[k])}</span>`).join("")}</div>`;
+}
+
+/* --- camera: live preview in the page, photo taken with a tap --- */
+let camStream=null;
+function stopCamera(){ if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream=null; } }
+/* opens the camera inside box (an element); onShot(dataUrl) gets the photo */
+async function cameraInto(box,onShot,onCancel){
+  const fallback = msg => {          // no camera API (old browser, http) or permission refused: native picker
+    box.innerHTML=`<div class="hint" style="margin:0 0 8px">${esc(msg)}</div>
+      <label class="btn">📷 Open camera / gallery<input type="file" accept="image/*" capture="environment" hidden></label>
+      <button class="btn ghost" style="margin-top:8px" data-cam="cancel">Cancel</button>`;
+    box.querySelector("input").onchange=async e=>{ const f=e.target.files[0]; if(!f) return;
+      try{ onShot(await shrinkPhoto(f)); }catch(err){ toast(err.message,"err"); } };
+    box.querySelector('[data-cam="cancel"]').onclick=()=>onCancel&&onCancel();
+  };
+  if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)||!window.isSecureContext){ fallback("This browser can't open the camera here."); return; }
+  box.innerHTML=`<div class="hint" style="margin:0 0 8px">Starting the camera…</div>`;
+  stopCamera();
+  try{ camStream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1440}}}); }
+  catch(err){ fallback("Camera not allowed — allow it in the browser settings, or use the button below."); return; }
+  box.innerHTML=`<video autoplay playsinline muted style="width:100%;max-height:60vh;object-fit:cover;border-radius:12px;background:#000;display:block"></video>
+    <div class="btn-grid" style="margin-top:10px"><button class="btn" data-cam="cancel">Cancel</button>
+      <button class="btn primary" data-cam="shot">📷 Take photo</button></div>`;
+  const v=box.querySelector("video"); v.srcObject=camStream;
+  box.querySelector('[data-cam="cancel"]').onclick=()=>{ stopCamera(); onCancel&&onCancel(); };
+  box.querySelector('[data-cam="shot"]').onclick=()=>{
+    if(!v.videoWidth){ toast("The camera is not ready yet","info"); return; }
+    const k=Math.min(1,1280/Math.max(v.videoWidth,v.videoHeight)), c=document.createElement("canvas");
+    c.width=Math.round(v.videoWidth*k); c.height=Math.round(v.videoHeight*k);
+    c.getContext("2d").drawImage(v,0,0,c.width,c.height);
+    stopCamera(); onShot(c.toDataURL("image/jpeg",0.72));
+  };
+}
+/* check-in item: the camera opens in its own sheet */
+function itemCamera(key){
+  openSheet(`<h3>Photo</h3><p class="sub">Take a photo of the equipment</p><div id="camBox"></div>`);
+  cameraInto($("#camBox"),url=>{ const p=stowParams(), i=p&&p.d.items.find(x=>x.key===key);
+      closeSheet(); if(i){ i.photo=url; i.photo_id=null; drawItems(); } },
+    ()=>closeSheet());
 }
 let DB = null, SESSION = null, nav = [], scanCtx = null;
 
@@ -522,7 +567,8 @@ const byNumber = (a,b) => String(a.section||"").localeCompare(String(b.section||
    kids' skis use Ski kids, then the regular area of that kind */
 function kindsFor(item,vip){
   const k = item.category==="skis" ? (item.kids?["ski_kids","ski"]:["ski"])
-    : item.category==="boots" ? ["boots"] : item.category==="snowboard" ? ["snowboard"] : [];
+    : item.category==="snowboard" ? (item.kids?["ski_kids","snowboard"]:["snowboard"])
+    : item.category==="boots" ? ["boots"] : [];
   return vip ? ["vip",...k] : k;
 }
 /* picks a free location for every item without a manual choice; never twice the same */
@@ -1155,7 +1201,7 @@ VIEWS.stow = (p) => {
     <div class="btn-grid" style="grid-template-columns:repeat(3,1fr)">
       ${STORED.map(k=>`<button class="btn sm" style="width:100%;padding:0 6px" data-act="ci-add" data-k="${k}">+ ${catInfo(k).ic} ${esc(catInfo(k).short||catInfo(k).label)}</button>`).join("")}
     </div>
-    <div class="hint">One line per item: a pair of boots, a pair of skis with their poles, one snowboard. Each goes to its own location.</div>
+    <div class="hint">One line per item: a pair of boots, a pair of skis with their poles, one snowboard. Take its photo and check the storage — the first free one of its area is suggested.</div>
     <div class="btn-grid one" style="margin-top:18px">
       <button class="btn go" data-act="ci-save" id="ciSave">Check in</button>
       ${r?"":`<button class="btn ghost" data-act="scan" data-ctx="checkin">Have the key card? Scan it</button>`}
@@ -1190,18 +1236,13 @@ function drawItems(){
     return `<div class="ci-item" data-key="${i.key}">
       <div class="hd"><span style="font-size:22px">${c.ic}</span><b>${esc(c.label)}</b>
         <button class="btn sm ghost" data-act="ci-del" data-key="${i.key}" aria-label="Remove">✕</button></div>
-      ${i.category==="skis"?`<label class="check"><input type="checkbox" data-ci="kids" ${i.kids?"checked":""}> Kids' skis — use Ski kids</label>`:""}
-      <div class="two">
-        <label class="f"><span>${esc(c.size||"Size")}</span><input class="input" data-ci="size" value="${esc(i.size)}" autocomplete="off"></label>
-        <label class="f"><span>Brand / colour</span><input class="input" data-ci="note" value="${esc(i.note)}" placeholder="Black Atomic" autocomplete="off"></label>
-      </div>
+      ${i.category==="skis"||i.category==="snowboard"?`<label class="check"><input type="checkbox" data-ci="kids" ${i.kids?"checked":""}> Kids use — goes to the Kids area</label>`:""}
       <div class="ci-photo">
-        ${i.photo?`<img src="${i.photo}" alt="">`:""}
-        <label class="btn sm" style="width:auto;flex:1">📷 ${i.photo?"Retake photo":"Add photo"}
-          <input type="file" accept="image/*" capture="environment" data-ci-photo="${i.key}" hidden></label>
+        ${i.photo?`<img src="${i.photo}" alt="" data-act="ci-cam" data-key="${i.key}" style="cursor:pointer">`:""}
+        <button class="btn sm ${i.photo?"":"primary"}" style="width:auto;flex:1" data-act="ci-cam" data-key="${i.key}">📷 ${i.photo?"Retake photo":"Take photo"}</button>
         ${i.photo?`<button class="btn sm ghost" data-act="ci-unphoto" data-key="${i.key}">Remove</button>`:""}
       </div>
-      <div class="dest"><span class="eyebrow">Goes to</span>
+      <div class="dest"><span class="eyebrow">Storage</span>
         ${dest?`<span class="tag sm">${esc(dest.storage_number)}</span>`:`<span class="chip solid s-attention">No free location</span>`}
         <select class="input" data-ci="storage_id" aria-label="Location">
           <option value="">${i.auto?"Automatic · "+esc(stor(i.auto).storage_number+" · "+(stor(i.auto).section||"")):"Automatic"}</option>
@@ -1216,21 +1257,12 @@ document.addEventListener("input",e=>{
   const f=e.target.dataset && e.target.dataset.ci; if(!f || f==="storage_id" || f==="kids") return;
   const i=ciItem(e.target); if(i) i[f]=e.target.value;
 });
-document.addEventListener("change",async e=>{
+document.addEventListener("change",e=>{
   const t=e.target;
   if(t.dataset && (t.dataset.ci==="storage_id" || t.dataset.ci==="kids")){
     const i=ciItem(t); if(!i) return;
     if(t.dataset.ci==="kids"){ i.kids=t.checked; i.storage_id=null; } else i.storage_id=t.value?+t.value:null;
-    drawItems(); return;
-  }
-  if(t.dataset && t.dataset.ciPhoto){
-    const i=ciItem(t), file=t.files&&t.files[0]; if(!i||!file) return;
-    try{ i.photo=await shrinkPhoto(file); i.photo_id=null; drawItems(); }catch(err){ toast(err.message,"err"); }
-    return;
-  }
-  if(t.id==="eqPhoto"){
-    const file=t.files&&t.files[0]; if(!file) return;
-    try{ eqPhoto=await shrinkPhoto(file); const im=$("#eqPhotoImg"); if(im){ im.src=eqPhoto; im.classList.remove("hidden"); } }catch(err){ toast(err.message,"err"); }
+    drawItems();
   }
 });
 async function stowSave(){
@@ -1257,7 +1289,7 @@ async function stowSave(){
   d.items.forEach(i=>{
     const s=stor(i.storage_id||i.auto);
     s.room_id=r.id; s.updated_at=now();
-    const e={id:uid(),storage_id:s.id,category:i.category,description:"",quantity:1,size:i.size.trim(),type:i.note.trim(),
+    const e={id:uid(),storage_id:s.id,category:i.category,description:"",quantity:1,size:"",type:"",
       status:"stored",created_at:now(),updated_at:now()};
     if(i.kids) e.kids=true;
     if(i.photo_id) e.photo_id=i.photo_id;
@@ -1275,7 +1307,7 @@ async function stowSave(){
     <p class="sub">Put each item in its location:</p>
     ${placed.map(([e,s])=>`<div class="eq"><div class="ic">${catInfo(e.category).ic}</div>
       <div class="body"><b>${esc(eqLabel(e))}</b><small>${esc([s.section,whereOf(s)].filter(Boolean).join(" · "))}</small></div>
-      <span class="tag sm">${esc(s.storage_number)}</span></div>`).join("")}
+      ${e.photo_id?thumb(e.photo_id,eqLabel(e)):""}<span class="tag sm">${esc(s.storage_number)}</span></div>`).join("")}
     <div style="margin-top:12px">${hallPlan(placed.map(([,s])=>s.section))}</div>
     <div class="btn-grid" style="margin-top:14px">
       <button class="btn" data-act="scan" data-ctx="add_card" data-room="${r.id}" data-storage="${first?first.id:""}">+ Key card</button>
@@ -1376,7 +1408,7 @@ function eqRow(e){
 }
 
 /* ---- equipment sheets ---- */
-let eqPhoto=null;                          // photo picked in the equipment sheet, not uploaded yet
+let eqPhoto=null;                          // photo taken in the equipment sheet, not uploaded yet
 function openEqSheet(storageId, editId){
   const e = editId?DB.equipment.find(x=>x.id===editId):null;
   const cat = e&&CATS[e.category]?e.category:"boots";
@@ -1386,38 +1418,40 @@ function openEqSheet(storageId, editId){
     <p class="sub">Storage ${esc(stor(+storageId)?.storage_number||"—")}</p>
     <label class="f"><span>Category</span>
       <select class="input" id="eCat">${cats.map(k=>`<option value="${k}" ${k===cat?"selected":""}>${CATS[k].ic}  ${CATS[k].label}</option>`).join("")}</select></label>
-    <label class="check"><input type="checkbox" id="eKids" ${e&&e.kids?"checked":""}> Kids</label>
-    <label class="f"><span>Quantity</span><input class="input" id="eQty" inputmode="numeric" value="${e?e.quantity:1}"></label>
-    <label class="f"><span>Size / length</span><input class="input" id="eSize" value="${e?esc(e.size||""):""}" placeholder="e.g. 27.5 or 170"></label>
-    <label class="f"><span>Brand / colour</span><input class="input" id="eType" value="${e?esc(e.type||e.description||""):""}" placeholder="Black Atomic…"></label>
+    <label class="check"><input type="checkbox" id="eKids" ${e&&e.kids?"checked":""}> Kids use</label>
     <div class="ci-photo">
       <img id="eqPhotoImg" class="${e&&e.photo_id?"":"hidden"}" src="${e&&e.photo_id?photoUrl(e.photo_id):""}" alt="">
-      <label class="btn sm" style="width:auto;flex:1">📷 ${e&&e.photo_id?"Replace photo":"Add photo"}
-        <input type="file" accept="image/*" capture="environment" id="eqPhoto" hidden></label></div>
+      <button class="btn sm" style="width:auto;flex:1" data-act="eq-cam">📷 ${e&&e.photo_id?"Retake photo":"Take photo"}</button></div>
+    <div id="eqCam"></div>
     <div class="btn-grid" style="margin-top:8px">
       ${e?`<button class="btn danger" data-act="eq-delete" data-id="${e.id}">Remove</button>`:`<button class="btn" data-act="close-sheet">Cancel</button>`}
       <button class="btn primary" data-act="eq-save" data-storage="${storageId}" data-id="${e?e.id:""}">Save</button>
     </div>`);
 }
+function eqCamera(){
+  const box=$("#eqCam"); if(!box) return;
+  cameraInto(box,url=>{ eqPhoto=url; box.innerHTML=""; const im=$("#eqPhotoImg"); if(im){ im.src=url; im.classList.remove("hidden"); } },
+    ()=>{ box.innerHTML=""; });
+}
 async function saveEq(storageId,editId){
   if(busy) return;
-  const cat=$("#eCat").value, kids=!!$("#eKids")?.checked, qty=Math.max(1,parseInt($("#eQty").value||"1",10)||1), size=$("#eSize").value.trim(), type=$("#eType").value.trim();
+  const cat=$("#eCat").value, kids=!!$("#eKids")?.checked;
   if(!stor(+storageId)){ toast("That storage no longer exists","err"); closeSheet(); render(); return; }
   let photo_id=null;
   if(eqPhoto){ busy=true;
     try{ photo_id=await uploadPhoto(eqPhoto); }catch(err){ toast(err.message,"err"); return; } finally{ busy=false; } }
   eqPhoto=null;
   if(editId){ const e=DB.equipment.find(x=>x.id===+editId); if(!e){ closeSheet(); render(); return; }
-    Object.assign(e,{category:cat,quantity:qty,size,type,description:"",updated_at:now()});
+    Object.assign(e,{category:cat,updated_at:now()});
     if(kids) e.kids=true; else delete e.kids;
     if(photo_id) e.photo_id=photo_id;
-    log(photo_id?"Equipment photo added":"Equipment updated",{storage_id:e.storage_id,room_id:stor(e.storage_id)?.room_id,equipment_id:e.id,photo_id,notes:`${eqLabel(e)} ×${qty}`});
+    log(photo_id?"Equipment photo added":"Equipment updated",{storage_id:e.storage_id,room_id:stor(e.storage_id)?.room_id,equipment_id:e.id,photo_id,notes:`${eqLabel(e)} ×${e.quantity}`});
   }else{
-    const e={id:uid(),storage_id:+storageId,category:cat,description:"",quantity:qty,size,type,status:"stored",created_at:now(),updated_at:now()};
+    const e={id:uid(),storage_id:+storageId,category:cat,description:"",quantity:1,size:"",type:"",status:"stored",created_at:now(),updated_at:now()};
     if(kids) e.kids=true;
     if(photo_id) e.photo_id=photo_id;
     DB.equipment.push(e);
-    log("Equipment added",{storage_id:e.storage_id,room_id:stor(e.storage_id).room_id,equipment_id:e.id,photo_id,notes:`${eqLabel(e)} ×${qty}`});
+    log("Equipment added",{storage_id:e.storage_id,room_id:stor(e.storage_id).room_id,equipment_id:e.id,photo_id,notes:`${eqLabel(e)} ×1`});
     const s=stor(+storageId); if(s.status==="available") setStorageStatus(s,"preparing");
   }
   save(); closeSheet(); toast("Equipment saved"); render();
@@ -1425,7 +1459,7 @@ async function saveEq(storageId,editId){
 /* "Boots ×1, Skis + poles ×1" — the admin Analytics page reads this format */
 const manifest = s => eqOf(s.id).map(e=>`${eqLabel(e)} ×${e.quantity}`).join(", ");
 const eqLine = e => `<div class="eq"><div class="ic">${catInfo(e.category).ic}</div>
-  <div class="body"><b>${esc(eqLabel(e))} × ${esc(e.quantity)}</b><small>${esc([e.type,e.size].filter(Boolean).join(" · ")||"—")}${stor(e.storage_id)?" · "+esc(stor(e.storage_id).storage_number):""}</small></div>
+  <div class="body"><b>${esc(eqLabel(e))}${+e.quantity>1?" × "+esc(e.quantity):""}</b><small>${esc([stor(e.storage_id)?.storage_number,stor(e.storage_id)?.section,e.type,e.size].filter(Boolean).join(" · ")||"—")}</small></div>
   ${e.photo_id?thumb(e.photo_id,eqLabel(e)):""}</div>`;
 /* from a storage, check-in means: more items for this guest, each to its own location */
 function openCheckinSheet(storageId){
@@ -1773,16 +1807,15 @@ VIEWS.map = () => {
     body:`<div class="empty"><span class="ic">🗺️</span>No locations to draw yet.</div>
       <button class="btn primary" data-act="nav" data-view="setup">Set up storage locations</button>`};
   return {title:"Storage map", sub:"Physical hall layout",
-  body:`${hallPlan()?`<div style="margin-bottom:14px">${hallPlan()}</div><div class="hint" style="margin:-6px 0 14px">Tap an area to jump to its locations.</div>`:""}
-    <div class="legend">${Object.entries(STATUS).map(([k,v])=>`<span><i style="background:${v.c}"></i>${v.label}</span>`).join("")}</div>
+  body:`${hallPlan()?`<div style="margin-bottom:14px">${hallPlan()}</div><div class="hint" style="margin:0 0 14px">Tap an area to jump to its locations.</div>`:""}
+    <div id="mapCells"><div class="legend">${Object.entries(STATUS).map(([k,v])=>`<span><i style="background:${v.c}"></i>${v.label}</span>`).join("")}</div>
     ${sections.map(sec=>{ const rows=DB.storages.filter(s=>(s.section||"Unassigned area")===sec), k=rows.map(kindOf).find(Boolean);
-      return `<div class="map-area" id="area-${esc(normCode(sec))}"><h2 class="sec">${esc(sec)}${k&&KINDS[k]!==sec?` · ${esc(KINDS[k])}`:""} · ${rows.filter(isFree).length} free</h2>
+      return `<div class="map-area" id="area-${esc(normCode(sec))}"><h2 class="sec"><i style="width:10px;height:10px;border-radius:3px;display:inline-block;background:${KIND_COLOR[k]||"var(--line)"}"></i>${esc(sec)}${k&&!String(sec).toLowerCase().startsWith(KINDS[k].toLowerCase())?` · ${esc(KINDS[k])}`:""}</h2>
       <div class="map-grid">${DB.storages.filter(s=>(s.section||"Unassigned area")===sec).sort((a,b)=>String(a.storage_number).localeCompare(String(b.storage_number),undefined,{numeric:true})).map(s=>`
         <button class="cell on" style="--c:${stInfo(s.status).c}" data-act="nav" data-view="storage" data-id="${s.id}">
           <span class="n">${esc(s.storage_number)}</span>
-          <span class="k">${room(s.room_id)?"R"+esc(room(s.room_id).room_number):"free"}</span>
-          ${eqCount(s.id)?`<span class="k" style="color:var(--frost)">${eqOf(s.id).map(e=>catInfo(e.category).ic).join("")}</span>`:""}
-        </button>`).join("")}</div></div>`; }).join("")}`};
+          ${room(s.room_id)?`<span class="k">R${esc(room(s.room_id).room_number)} ${eqOf(s.id).map(e=>catInfo(e.category).ic).join("")}</span>`:""}
+        </button>`).join("")}</div></div>`; }).join("")}</div>`};
 };
 VIEWS.active = () => {
   const groups=[["ready","Ready for guest"],["guest_using","With the guest"],["occupied","Stored"],["preparing","Preparing"],["attention","Needs attention"]];
@@ -2041,7 +2074,7 @@ function openAccount(){
 function openSheet(html){ const m=$("#modal"); m.innerHTML=`<div class="sheet">${html}</div>`; m.classList.remove("hidden");
   m.onclick=e=>{ if(e.target===m) closeSheet(); }; }
 let staleView=false;
-function closeSheet(){ const m=$("#modal"); m.classList.add("hidden"); m.innerHTML="";
+function closeSheet(){ stopCamera(); const m=$("#modal"); m.classList.add("hidden"); m.innerHTML="";
   if(staleView){ staleView=false; render(); } }
 
 /* ==========================================================================
@@ -2112,6 +2145,8 @@ document.addEventListener("click", e=>{
     case "ci-add": { const p=stowParams(); if(!p) break; p.d.items.push(newItem(el.dataset.k)); drawItems();
       const last=$$(".ci-item").pop(); if(last) last.scrollIntoView({block:"nearest",behavior:"smooth"}); break; }
     case "ci-del": { const p=stowParams(); if(!p) break; p.d.touched=true; p.d.items=p.d.items.filter(i=>i.key!==+el.dataset.key); drawItems(); break; }
+    case "ci-cam": itemCamera(+el.dataset.key); break;
+    case "eq-cam": eqCamera(); break;
     case "ci-unphoto": { const i=ciItem(el); if(i){ i.photo=null; i.photo_id=null; drawItems(); } break; }
     case "ci-save": stowSave(); break;
     /* whole room */
