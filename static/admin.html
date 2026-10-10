@@ -127,8 +127,15 @@ td.sel input,th.sel input{width:18px;height:18px;margin:2px 0 0;accent-color:var
 tr.picked td{background:rgba(255,77,77,.08)}
 .bulkbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;padding:8px 12px;border:1px solid var(--st-attention);border-radius:var(--r-s);background:rgba(255,77,77,.07)}
 .warn{color:var(--st-attention)}
-.node-photos{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
-.node-photos img{width:180px;max-width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block;background:#060d15}
+.trace.with-photos{display:grid;grid-template-columns:minmax(0,1fr) 170px;gap:14px;align-items:start}
+.trace.with-photos .chain{gap:6px}
+.trace.with-photos .node{min-width:0;padding:8px 10px}
+.trace.with-photos .arrow{font-size:16px}
+.trace-photos{display:flex;flex-direction:column;gap:10px;margin-top:4px}
+.trace-photos a{display:block;color:inherit;text-decoration:none}
+.trace-photos img{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:10px;border:1px solid var(--line);display:block;background:#060d15}
+.trace-photos span{display:block;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-top:4px}
+@media(max-width:760px){.trace.with-photos{grid-template-columns:1fr}.trace-photos{flex-direction:row;flex-wrap:wrap}.trace-photos a{width:160px}}
 .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:12px}
 .gallery .ph{background:var(--night);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
 .gallery .ph a,.gallery .ph .none{display:block;aspect-ratio:4/3;background:#060d15}
@@ -154,13 +161,13 @@ tr.picked td{background:rgba(255,77,77,.08)}
 .issue b{font-family:var(--display);font-size:16px;letter-spacing:.8px;text-transform:uppercase;display:block}
 .issue p{margin:2px 0 0;font-size:13px;color:var(--mist)}
 .issue .grow{min-width:0}
-.chain{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0 10px}
+.chain{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start;margin:4px 0 10px}   /* headings on one line, even when a box holds a photo */
 .node{background:var(--night);border:1px solid var(--line);border-radius:10px;padding:8px 12px;min-width:120px}
 .node small{display:block;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:1px}
 .node b{font-family:var(--display);font-size:19px;letter-spacing:.6px}
 .node.missing{border-style:dashed;border-color:var(--st-attention)}
 .node.missing b{color:var(--st-attention)}
-.arrow{color:var(--dim);font-size:20px}
+.arrow{color:var(--dim);font-size:20px;line-height:1;margin-top:18px}
 .hist{border-left:2px solid var(--line);margin-left:6px;padding-left:14px}
 .hev{position:relative;padding:0 0 12px}
 .hev::before{content:"";position:absolute;left:-20px;top:5px;width:10px;height:10px;border-radius:50%;background:var(--slab2);border:2px solid var(--glacier)}
@@ -532,10 +539,14 @@ function traceStorage(s, why){
   const roomCards = r ? cardsOfRoom(r.id).filter(c=>c.storage_id!==s.id) : [];
   const ids={s:s.id,r:s.room_id,c:new Set([...cards,...roomCards].map(c=>c.id))};
   const hist=DB.history.filter(h=>h.storage_id===ids.s||(ids.r!=null&&h.room_id===ids.r)||ids.c.has(h.key_card_id)).slice(0,12);
+  // the equipment photos sit in a column on the right, so the history starts right under the boxes
+  const photos=eq.filter(e=>e.photo_id).map(e=>`<a href="${photoUrl(e.photo_id)}" target="_blank" rel="noopener" title="Open full size">
+      <img src="${photoUrl(e.photo_id)}" alt="${esc(CATS[e.category]||e.category)}" loading="lazy"><span>${esc(CATS[e.category]||e.category)}${e.kids?" (kids)":""}</span></a>`).join("");
   return `<div class="panel" style="margin-bottom:12px">
     <div class="row"><span class="eyebrow dim tiny grow">${esc(why)}</span>
       <button class="btn sm" data-act="edit" data-col="storages" data-id="${s.id}">Edit storage</button>
       ${r?`<button class="btn sm" data-act="edit" data-col="rooms" data-id="${r.id}">Edit room</button>`:""}</div>
+    <div class="trace ${photos?"with-photos":""}"><div class="trace-main">
     <div class="chain">
       ${cards.length?cards.map(c=>`<div class="node"><small>Key card · ${esc(c.status)}</small><b class="mono">${esc(c.card_code)}</b></div>`).join("")
         :`<div class="node missing"><small>Key card</small><b>none</b></div>`}
@@ -544,14 +555,15 @@ function traceStorage(s, why){
       <span class="arrow">→</span>
       <div class="node"><small>Storage · ${esc(s.section||"")}</small><b>${esc(s.storage_number)}</b> ${chip(s.status,STATUS[s.status]||s.status)}</div>
       <span class="arrow">→</span>
-      <div class="node"><small>Equipment</small><b>${eq.length?eq.map(e=>`${esc(CATS[e.category]||e.category)}${e.kids?" (kids)":""} ×${esc(e.quantity)}`).join(", "):"empty"}</b>
-        ${eq.some(e=>e.photo_id)?`<div class="node-photos">${eq.filter(e=>e.photo_id).map(e=>`<a href="${photoUrl(e.photo_id)}" target="_blank" rel="noopener" title="Open full size"><img src="${photoUrl(e.photo_id)}" alt="${esc(CATS[e.category]||e.category)}" loading="lazy"></a>`).join("")}</div>`:""}</div>
+      <div class="node"><small>Equipment</small><b>${eq.length?eq.map(e=>`${esc(CATS[e.category]||e.category)}${e.kids?" (kids)":""} ×${esc(e.quantity)}`).join(", "):"empty"}</b></div>
     </div>
     ${roomCards.length?`<div class="issue"><div class="grow"><b>Room cards not linked to this storage</b>
       <p>${roomCards.map(c=>`${esc(c.card_code)} → ${c.storage_id?esc(stor(c.storage_id)?.storage_number||"deleted #"+c.storage_id):"no storage"}`).join(" · ")}</p></div>
       <button class="btn sm" data-act="link-room-cards" data-id="${s.id}">Link them here</button></div>`:""}
     <div class="hist" style="margin-top:12px">${hist.map(histEvent).join("")||`<div class="dim tiny">No history for this chain.</div>`}</div>
-  </div>`;
+    </div>
+    ${photos?`<div class="trace-photos">${photos}</div>`:""}
+  </div></div>`;
 }
 /* Earlier photos of a room, kept in the history (equipment records go when the guest
    checks out, the photo stays). */
