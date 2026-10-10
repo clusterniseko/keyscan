@@ -36,9 +36,9 @@ Si no defines `SECRET_KEY`, se genera una y se guarda en la base de datos.
    Boots 1–4 (`B1-01`…), Snowboard (`SB-`), Ski 1–2 (`S1-`, `S2-`), Ski Kids (`SK-`) y VIP (`V-`).
    Están colocadas como en el plano del guardaesquís:
    ```
-   [ Boots 1 ] [ Boots 2 ] [ Snowboard | Ski 1 ]      ┃ Ski 2
-                                                     ┃ (pared derecha)
-   [ Boots 3 ] door [ Boots 4 ] door [ VIP | Ski Kids ] door
+   [ Boots 1 ] [ Boots 2 ] [ Snowboard | Ski 1 ]   ┃ Ski 2
+                                                  ┃ (pared derecha)
+   [ Boots 3 ] [ Boots 4 ] [ VIP | Ski Kids ]
    ```
    La numeración está en `HALL_LAYOUT`, al principio de `app.py` (por ahora 20 por zona, 10 en VIP).
    El dibujo del plano que muestra la app está en `HALL_PLAN` (`static/index.html`); usa los mismos
@@ -63,8 +63,11 @@ python app.py                   # http://localhost:5000
 - Solo se guardan **boots**, **skis (con sus poles)** y **snowboards**.
 - Cada equipo va a **su propia ubicación**, en la zona de su tipo: un cliente con una snowboard y
   un par de boots usa dos ubicaciones. La app propone la primera libre de cada zona y el valet
-  puede cambiarla. Los skis de niño van a *Ski Kids*; los clientes VIP usan la zona *VIP*
-  (y, si está llena, la zona normal).
+  puede cambiarla. Los skis y snowboards marcados *Kids use* van a *Ski Kids* (si está llena, a su
+  zona normal); los clientes VIP usan la zona *VIP* (y, si está llena, la zona normal).
+- En el check-in cada equipo solo lleva **foto** y **storage**. La foto se toma con la cámara del
+  dispositivo dentro de la app (hace falta HTTPS y dar permiso a la cámara); si el navegador no
+  la permite, se abre la cámara/galería del sistema.
 - Cada zona tiene un tipo (*Holds*): se elige al crear la fila en Hall setup / Storage map
   o con el selector de cada zona. Las zonas sin tipo no se usan en la asignación automática.
 - **Check in** (inicio → *Check in*) se hace con el número de habitación; la tarjeta es opcional.
